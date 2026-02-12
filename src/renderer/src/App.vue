@@ -2,6 +2,12 @@
 import Versions from './components/Versions.vue'
 
 const ipcHandle = (): void => window.electron.ipcRenderer.send('ping')
+
+const getSystemInfo = (): void => {
+  window.electron.ipcRenderer.invoke('get-system-info').then((info) => {
+    alert(`System Info:\n${JSON.stringify(info, null, 2)}`)
+  })
+}
 </script>
 
 <template>
@@ -20,6 +26,9 @@ const ipcHandle = (): void => window.electron.ipcRenderer.send('ping')
     </div>
     <div class="action">
       <a target="_blank" rel="noreferrer" @click="ipcHandle">Send IPC</a>
+    </div>
+    <div class="action">
+      <a target="_blank" rel="noreferrer" @click="getSystemInfo">Get System Info</a>
     </div>
   </div>
   <Versions />

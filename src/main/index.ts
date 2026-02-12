@@ -1,4 +1,5 @@
 import { app, shell, BrowserWindow, ipcMain } from 'electron'
+import { osUtils } from './util/util'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -51,6 +52,14 @@ app.whenReady().then(() => {
 
   // IPC test
   ipcMain.on('ping', () => console.log('pong'))
+
+  ipcMain.handle('get-system-info', () => {
+    return {
+      cpuCores: osUtils.getCpuCores(),
+      totalMemoryBytes: (osUtils.getTotalMemoryBytes() / 1024 / 1024 / 1024).toFixed(2) + ' GB',
+      operatingSystem: osUtils.getOperatingSystem()
+    }
+  })
 
   createWindow()
 
