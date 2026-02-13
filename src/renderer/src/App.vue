@@ -1,35 +1,43 @@
 <script setup lang="ts">
-import Versions from './components/Versions.vue'
+import renderutil from './renderutil'
 
-const ipcHandle = (): void => window.electron.ipcRenderer.send('ping')
+const getSystemInfo = async (): Promise<void> => {
+  try {
+    const info = await window.api.getSystemInfo()
+    const message = `Platform: ${info.platform}\nArchitecture: ${info.arch}\nCPU: ${info.cpu}\nMemory: ${renderutil.formatBytes(info.memory)}`
+    alert(message)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to load system info.'
+    alert(message)
+  }
+}
 
-const getSystemInfo = (): void => {
-  window.electron.ipcRenderer.invoke('get-system-info').then((info) => {
-    alert(`System Info:\n${JSON.stringify(info, null, 2)}`)
-  })
+const sayHello = async (): Promise<void> => {
+  try {
+    const result = await window.api.sayHello('Electron and Vue!')
+    alert(result)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to say hello.'
+    alert(message)
+  }
 }
 </script>
 
 <template>
-  <img alt="logo" class="logo" src="./assets/electron.svg" />
-  <div class="creator">Powered by electron-vite</div>
-  <div class="text">
-    Build an Electron app with
-    <span class="vue">Vue</span>
-    and
-    <span class="ts">TypeScript</span>
+  <div class="flex min-h-screen items-center justify-center p-6">
+    <button
+      type="button"
+      class="rounded-md bg-slate-900 px-5 py-2 text-sm font-semibold text-white"
+      @click="getSystemInfo"
+    >
+      Get System Info
+    </button>
+    <button
+      type="button"
+      class="ml-4 rounded-md bg-slate-900 px-5 py-2 text-sm font-semibold text-white"
+      @click="sayHello"
+    >
+      Say Hello
+    </button>
   </div>
-  <p class="tip">Please try pressing <code>F12</code> to open the devTool</p>
-  <div class="actions">
-    <div class="action">
-      <a href="https://electron-vite.org/" target="_blank" rel="noreferrer">Documentation</a>
-    </div>
-    <div class="action">
-      <a target="_blank" rel="noreferrer" @click="ipcHandle">Send IPC</a>
-    </div>
-    <div class="action">
-      <a target="_blank" rel="noreferrer" @click="getSystemInfo">Get System Info</a>
-    </div>
-  </div>
-  <Versions />
 </template>

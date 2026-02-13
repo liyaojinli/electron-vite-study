@@ -1,8 +1,8 @@
 import { app, shell, BrowserWindow, ipcMain } from 'electron'
-import { osUtils } from './util/util'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
+import { registerApiHandlers } from './api'
 
 function createWindow(): void {
   // Create the browser window.
@@ -14,7 +14,9 @@ function createWindow(): void {
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false
+      sandbox: false,
+      contextIsolation: true,
+      nodeIntegration: false
     }
   })
 
@@ -53,13 +55,7 @@ app.whenReady().then(() => {
   // IPC test
   ipcMain.on('ping', () => console.log('pong'))
 
-  ipcMain.handle('get-system-info', () => {
-    return {
-      cpuCores: osUtils.getCpuCores(),
-      totalMemoryBytes: (osUtils.getTotalMemoryBytes() / 1024 / 1024 / 1024).toFixed(2) + ' GB',
-      operatingSystem: osUtils.getOperatingSystem()
-    }
-  })
+  registerApiHandlers()
 
   createWindow()
 
