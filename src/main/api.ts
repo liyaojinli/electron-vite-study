@@ -1,5 +1,7 @@
 import { ipcMain } from 'electron'
 import os from 'os'
+import { saveRepository } from './repository/repository'
+import { Repository } from '../shared/repository'
 
 // ========== API 定义区（只在这里添加新 API）==========
 export const apiHandlers = {
@@ -13,9 +15,9 @@ export const apiHandlers = {
       memory: os.totalmem()
     }
   },
-  // 测试其他api
-  sayHello: async (name: string) => {
-    return `Hello, ${name}!`
+
+  saveRepository: async (repo: Repository) => {
+    saveRepository(repo)
   }
 
   // 添加新 API 只需在这里添加方法即可，无需修改其他文件！

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import renderutil from './renderutil'
+import { Repository } from '../../shared/repository'
 
 const getSystemInfo = async (): Promise<void> => {
   try {
@@ -12,12 +13,13 @@ const getSystemInfo = async (): Promise<void> => {
   }
 }
 
-const sayHello = async (): Promise<void> => {
+const saveRepository = async (): Promise<void> => {
   try {
-    const result = await window.api.sayHello('Electron and Vue!')
+    const repo = new Repository('https://example.com', 'username', 'password', 'alias')
+    const result = await window.api.saveRepository(repo)
     alert(result)
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to say hello.'
+    const message = error instanceof Error ? error.message : 'Failed to save repository.'
     alert(message)
   }
 }
@@ -35,9 +37,9 @@ const sayHello = async (): Promise<void> => {
     <button
       type="button"
       class="ml-4 rounded-md bg-slate-900 px-5 py-2 text-sm font-semibold text-white"
-      @click="sayHello"
+      @click="saveRepository"
     >
-      Say Hello
+      Save Repository
     </button>
   </div>
 </template>
