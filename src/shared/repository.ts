@@ -1,8 +1,15 @@
+type RepositoryData = {
+  url: string
+  username: string
+  password: string
+  alias: string
+}
+
 class Repository {
-  private url: string
-  private username: string
-  private password: string
-  private alias: string
+  url: string
+  username: string
+  password: string
+  alias: string
 
   constructor(url: string, username: string, password: string, alias: string) {
     this.url = url
@@ -26,6 +33,20 @@ class Repository {
   getAlias(): string {
     return this.alias
   }
+
+  toJSON(): RepositoryData {
+    return {
+      url: this.url,
+      username: this.username,
+      password: this.password,
+      alias: this.alias
+    }
+  }
+
+  static fromJSON(data: RepositoryData): Repository {
+    return new Repository(data.url, data.username, data.password, data.alias)
+  }
 }
 
 export { Repository }
+export type { RepositoryData }

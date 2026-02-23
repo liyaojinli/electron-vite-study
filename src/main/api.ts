@@ -1,23 +1,33 @@
 import { ipcMain } from 'electron'
-import os from 'os'
-import { saveRepository } from './repository/repository'
-import { Repository } from '../shared/repository'
+import type { RepositoryData } from '../shared/repository'
+import {
+  createRepository,
+  insertRepository,
+  deleteRepository,
+  listRepositories,
+  updateRepository,
+  verifyRepository
+} from './repository/repository'
 
 // ========== API 定义区（只在这里添加新 API）==========
 export const apiHandlers = {
-  // 获取系统信息
-  getSystemInfo: async () => {
-    const cpus = os.cpus()
-    return {
-      platform: os.platform(),
-      arch: os.arch(),
-      cpu: cpus[0]?.model || 'Unknown',
-      memory: os.totalmem()
-    }
+  listRepositories: async () => {
+    return listRepositories()
   },
-
-  saveRepository: async (repo: Repository) => {
-    saveRepository(repo)
+  createRepository: async (repo: RepositoryData) => {
+    return createRepository(repo)
+  },
+  insertRepository: async (index: number, repo: RepositoryData) => {
+    return insertRepository(index, repo)
+  },
+  updateRepository: async (index: number, repo: RepositoryData) => {
+    return updateRepository(index, repo)
+  },
+  deleteRepository: async (index: number) => {
+    return deleteRepository(index)
+  },
+  verifyRepository: async (repo: RepositoryData) => {
+    return verifyRepository(repo)
   }
 
   // 添加新 API 只需在这里添加方法即可，无需修改其他文件！

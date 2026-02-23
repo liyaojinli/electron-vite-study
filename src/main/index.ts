@@ -1,14 +1,71 @@
 import { app, shell, BrowserWindow, ipcMain } from 'electron'
 import { join } from 'path'
+import fs from 'fs/promises'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { registerApiHandlers } from './api'
 
-function createWindow(): void {
+type WindowState = {
+  width: number
+  height: number
+  x?: number
+  y?: number
+  isMaximized?: boolean
+}
+
+const windowStateFile = 'window-state.json'
+
+const getWindowStatePath = (): string => {
+  return join(app.getPath('userData'), windowStateFile)
+}
+
+const loadWindowState = async (): Promise<WindowState> => {
+  const fallback = { width: 1100, height: 720 }
+  try {
+    const raw = await fs.readFile(getWindowStatePath(), 'utf-8')
+    const parsed = JSON.parse(raw) as WindowState
+    if (!parsed || typeof parsed !== 'object') {
+      return fallback
+    }
+
+    const width = Number.isFinite(parsed.width) ? Math.max(800, parsed.width) : fallback.width
+    const height = Number.isFinite(parsed.height) ? Math.max(600, parsed.height) : fallback.height
+
+    return {
+      width,
+      height,
+      x: Number.isFinite(parsed.x) ? parsed.x : undefined,
+      y: Number.isFinite(parsed.y) ? parsed.y : undefined,
+      isMaximized: Boolean(parsed.isMaximized)
+    }
+  } catch {
+    return fallback
+  }
+}
+
+const saveWindowState = async (window: BrowserWindow): Promise<void> => {
+  if (window.isDestroyed()) {
+    return
+  }
+  const bounds = window.isMaximized() ? window.getNormalBounds() : window.getBounds()
+  const state: WindowState = {
+    width: bounds.width,
+    height: bounds.height,
+    x: bounds.x,
+    y: bounds.y,
+    isMaximized: window.isMaximized()
+  }
+  await fs.writeFile(getWindowStatePath(), JSON.stringify(state), 'utf-8')
+}
+
+async function createWindow(): Promise<void> {
+  const state = await loadWindowState()
   // Create the browser window.
   const mainWindow = new BrowserWindow({
-    width: 900,
-    height: 670,
+    width: state.width,
+    height: state.height,
+    x: state.x,
+    y: state.y,
     show: false,
     autoHideMenuBar: true,
     ...(process.platform === 'linux' ? { icon } : {}),
@@ -22,6 +79,44 @@ function createWindow(): void {
 
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
+    if (state.isMaximized) {
+      mainWindow.maximize()
+    }
+  })
+
+  let saveTimer: NodeJS.Timeout | undefined
+  const scheduleSave = (): void => {
+    if (mainWindow.isDestroyed()) {
+      return
+    }
+    if (saveTimer) {
+      clearTimeout(saveTimer)
+    }
+    saveTimer = setTimeout(() => {
+      if (mainWindow.isDestroyed()) {
+        return
+      }
+      saveWindowState(mainWindow).catch((error) => {
+        console.error('Failed to save window state:', error)
+      })
+    }, 200)
+  }
+
+  mainWindow.on('resize', scheduleSave)
+  mainWindow.on('move', scheduleSave)
+  mainWindow.on('close', () => {
+    if (saveTimer) {
+      clearTimeout(saveTimer)
+    }
+    saveWindowState(mainWindow).catch((error) => {
+      console.error('Failed to save window state:', error)
+    })
+  })
+  mainWindow.on('closed', () => {
+    if (saveTimer) {
+      clearTimeout(saveTimer)
+      saveTimer = undefined
+    }
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
@@ -41,7 +136,7 @@ function createWindow(): void {
 // This method will be called when Electron has finished
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // Set app user model id for windows
   electronApp.setAppUserModelId('com.electron')
 
@@ -57,12 +152,14 @@ app.whenReady().then(() => {
 
   registerApiHandlers()
 
-  createWindow()
+  await createWindow()
 
   app.on('activate', function () {
     // On macOS it's common to re-create a window in the app when the
     // dock icon is clicked and there are no other windows open.
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    if (BrowserWindow.getAllWindows().length === 0) {
+      void createWindow()
+    }
   })
 })
 

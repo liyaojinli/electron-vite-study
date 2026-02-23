@@ -1,45 +1,55 @@
 <script setup lang="ts">
-import renderutil from './renderutil'
-import { Repository } from '../../shared/repository'
+import { onMounted, ref, shallowRef, type Component, watch } from 'vue'
+import AppMenu from './components/AppMenu.vue'
+import RepositorySettings from './components/RepositorySettings.vue'
 
-const getSystemInfo = async (): Promise<void> => {
-  try {
-    const info = await window.api.getSystemInfo()
-    const message = `Platform: ${info.platform}\nArchitecture: ${info.arch}\nCPU: ${info.cpu}\nMemory: ${renderutil.formatBytes(info.memory)}`
-    alert(message)
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to load system info.'
-    alert(message)
-  }
+const menuItems = [{ id: 'repository-settings', label: '仓库设置' }]
+const activeMenuId = ref(menuItems[0].id)
+const isDark = ref(false)
+const activeComponent = shallowRef<Component | null>(RepositorySettings)
+
+const applyTheme = (dark: boolean): void => {
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light'
 }
 
-const saveRepository = async (): Promise<void> => {
-  try {
-    const repo = new Repository('https://example.com', 'username', 'password', 'alias')
-    const result = await window.api.saveRepository(repo)
-    alert(result)
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to save repository.'
-    alert(message)
-  }
+const toggleTheme = (): void => {
+  isDark.value = !isDark.value
 }
+
+const handleMenuSelect = (id: string): void => {
+  activeMenuId.value = id
+  activeComponent.value = id === 'repository-settings' ? RepositorySettings : null
+}
+
+onMounted(() => {
+  const stored = localStorage.getItem('theme')
+  if (stored === 'dark' || stored === 'light') {
+    isDark.value = stored === 'dark'
+  } else {
+    isDark.value = window.matchMedia('(prefers-color-scheme: dark)').matches
+  }
+
+  applyTheme(isDark.value)
+  watch(isDark, (value) => {
+    applyTheme(value)
+    localStorage.setItem('theme', value ? 'dark' : 'light')
+  })
+})
 </script>
 
 <template>
-  <div class="flex min-h-screen items-center justify-center p-6">
-    <button
-      type="button"
-      class="rounded-md bg-slate-900 px-5 py-2 text-sm font-semibold text-white"
-      @click="getSystemInfo"
-    >
-      Get System Info
-    </button>
-    <button
-      type="button"
-      class="ml-4 rounded-md bg-slate-900 px-5 py-2 text-sm font-semibold text-white"
-      @click="saveRepository"
-    >
-      Save Repository
-    </button>
+  <div class="app-shell flex min-h-screen">
+    <AppMenu
+      :items="menuItems"
+      :active-id="activeMenuId"
+      :is-dark="isDark"
+      @select="handleMenuSelect"
+      @toggle-theme="toggleTheme"
+    />
+    <main class="app-content flex flex-1 p-6">
+      <div class="app-main">
+        <component :is="activeComponent" v-if="activeComponent" />
+      </div>
+    </main>
   </div>
 </template>
