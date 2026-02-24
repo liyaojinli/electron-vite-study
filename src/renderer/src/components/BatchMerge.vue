@@ -7,9 +7,17 @@ import {
   CheckCircle,
   Play,
   X,
-  Search
+  Search,
+  RefreshCw,
+  RotateCcw
 } from 'lucide-vue-next'
 import type { RepositoryData } from '../../../shared/repository'
+import SvnLogDialog from './SvnLogDialog.vue'
+import RevertConfirmDialog from './RevertConfirmDialog.vue'
+
+const props = defineProps<{
+  isActive: boolean
+}>()
 
 interface SvnLogEntry {
   revision: number
@@ -47,18 +55,48 @@ const isLoadingFiles = ref(false)
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const tableRef = ref<any>(null)
 
+// Repository update states
+const updatingRepos = ref<Set<string>>(new Set())
+
+// SVN Log Dialog states
+const showSvnLogDialog = ref(false)
+const svnLogTitle = ref('SVN 命令执行')
+const svnCommandLogs = ref<string[]>([])
+const svnLogLoading = ref(false)
+const svnLogSuccess = ref<boolean | null>(null)
+
+// Revert Confirm Dialog states
+const showRevertDialog = ref(false)
+const revertDialogRepoUrl = ref<string>('')
+const revertDialogFiles = ref<Array<{ status: string; path: string }>>([])
+const pendingRevertRepoUrl = ref<string>('')
+
 // Search related states
 const searchKeyword = ref<string>('')
 const startDate = ref<string>('')
 const endDate = ref<string>('')
 
-onMounted(async () => {
+const loadRepositories = async (): Promise<void> => {
   try {
     localRepositories.value = await api.getLocalRepositories()
   } catch (error) {
     console.error('Failed to load local repositories:', error)
   }
+}
+
+onMounted(async () => {
+  await loadRepositories()
 })
+
+// Reload repositories when component becomes active
+watch(
+  () => props.isActive,
+  async (isActive, wasActive) => {
+    if (isActive && !wasActive) {
+      await loadRepositories()
+    }
+  }
+)
 
 // Auto-load logs when source repo is selected (only initial load)
 watch(selectedSourceRepo, async (newValue, oldValue) => {
@@ -90,7 +128,8 @@ watch(selectedRevisions, async (newValue) => {
     try {
       const repo = localRepositories.value.find((r) => r.url === selectedSourceRepo.value)
       if (repo) {
-        affectedFiles.value = await api.getSvnChangedFiles(repo.url, newValue)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        affectedFiles.value = await (api as any).getSvnChangedFiles(repo.url, newValue)
       }
     } catch (error) {
       console.error('Failed to load changed files:', error)
@@ -215,6 +254,95 @@ const toggleResultExpanded = (index: number): void => {
   }
 }
 
+const performSvnUpdate = async (repoUrl: string): Promise<void> => {
+  svnLogTitle.value = `更新仓库: ${repoUrl}`
+  svnCommandLogs.value = []
+  svnLogLoading.value = true
+  svnLogSuccess.value = null
+  showSvnLogDialog.value = true
+  updatingRepos.value.add(repoUrl)
+
+  try {
+    const result = await api.svnUpdate(repoUrl)
+    svnCommandLogs.value = result.logs || []
+    svnLogSuccess.value = result.success
+
+    if (!result.success) {
+      console.error('SVN update failed:', result.message)
+    }
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : '更新失败，请检查控制台日志'
+    svnCommandLogs.value = [errorMsg]
+    svnLogSuccess.value = false
+    console.error('SVN update failed:', error)
+  } finally {
+    svnLogLoading.value = false
+    updatingRepos.value.delete(repoUrl)
+  }
+}
+
+const performSvnRevert = async (repoUrl: string): Promise<void> => {
+  try {
+    console.log('[performSvnRevert] Getting status for repo:', repoUrl)
+    // Get the status of modified files first
+    const statusResult = await window.api.getSvnStatus(repoUrl)
+    console.log('[performSvnRevert] Status result:', statusResult)
+    const { files } = statusResult
+
+    // Show dialog
+    revertDialogRepoUrl.value = repoUrl
+    revertDialogFiles.value = files || []
+    pendingRevertRepoUrl.value = repoUrl
+    showRevertDialog.value = true
+  } catch (error) {
+    console.error('[performSvnRevert] Failed to get SVN status:', error)
+    // Still show dialog even if status fetch failed
+    revertDialogRepoUrl.value = repoUrl
+    revertDialogFiles.value = []
+    pendingRevertRepoUrl.value = repoUrl
+    showRevertDialog.value = true
+  }
+}
+
+const handleConfirmRevert = async (
+  selectedFiles: Array<{ status: string; path: string }>
+): Promise<void> => {
+  const repoUrl = pendingRevertRepoUrl.value
+  showRevertDialog.value = false
+
+  svnLogTitle.value = `恢复仓库: ${repoUrl} (${selectedFiles.length} 个文件)`
+  svnCommandLogs.value = []
+  svnLogLoading.value = true
+  svnLogSuccess.value = null
+  showSvnLogDialog.value = true
+
+  try {
+    // Extract file paths from selected files
+    const filePaths = selectedFiles.map((f) => f.path)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = await (api as any).svnRevert(repoUrl, filePaths)
+    svnCommandLogs.value = result.logs || []
+    svnLogSuccess.value = result.success
+
+    if (!result.success) {
+      console.error('SVN revert failed:', result.message)
+    }
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : '恢复失败，请检查控制台日志'
+    svnCommandLogs.value = [errorMsg]
+    svnLogSuccess.value = false
+    console.error('SVN revert failed:', error)
+  } finally {
+    svnLogLoading.value = false
+    pendingRevertRepoUrl.value = ''
+  }
+}
+
+const handleCancelRevert = (): void => {
+  showRevertDialog.value = false
+  pendingRevertRepoUrl.value = ''
+}
+
 const performMerge = async (): Promise<void> => {
   if (!canMerge.value || !sourceRepo.value) return
 
@@ -223,7 +351,8 @@ const performMerge = async (): Promise<void> => {
 
   try {
     const selectedLog = svnLogs.value.filter((l) => l.selected)[0]
-    mergeResults.value = await api.performBatchMerge(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mergeResults.value = await (api as any).performBatchMerge(
       sourceRepo.value,
       targetRepos.value,
       selectedRevisions.value,
@@ -238,7 +367,7 @@ const performMerge = async (): Promise<void> => {
 </script>
 
 <template>
-  <section class="batch-merge">
+  <section v-show="isActive" class="batch-merge">
     <div class="batch-merge-container">
       <h2 class="section-title">批量合并</h2>
 
@@ -360,19 +489,46 @@ const performMerge = async (): Promise<void> => {
       <!-- Target Repositories Selection -->
       <div v-if="selectedSourceRepo" class="merge-section">
         <h3 class="section-subtitle">步骤 3: 选择目标仓库</h3>
-        <div class="target-repos">
-          <label
+        <div class="target-repos-grid">
+          <div
             v-for="repo in localRepositories.filter((r) => r.url !== selectedSourceRepo)"
             :key="repo.url"
-            class="checkbox-label"
+            class="target-repo-panel"
           >
-            <input
-              type="checkbox"
-              :checked="selectedTargetRepos.has(repo.url)"
-              @change="toggleTargetRepo(repo.url)"
-            />
-            <span>{{ repo.alias }} ({{ repo.url }})</span>
-          </label>
+            <div class="panel-header">
+              <div class="panel-left">
+                <input
+                  type="checkbox"
+                  class="repo-checkbox"
+                  :checked="selectedTargetRepos.has(repo.url)"
+                  @change="toggleTargetRepo(repo.url)"
+                />
+                <span class="repo-alias">{{ repo.alias }}</span>
+              </div>
+              <div class="panel-right">
+                <button
+                  type="button"
+                  class="update-btn"
+                  :title="`更新 ${repo.alias}`"
+                  :disabled="updatingRepos.has(repo.url)"
+                  @click="performSvnUpdate(repo.url)"
+                >
+                  <RefreshCw :size="16" :class="{ 'is-spinning': updatingRepos.has(repo.url) }" />
+                </button>
+                <button
+                  type="button"
+                  class="revert-btn"
+                  :title="`恢复 ${repo.alias}`"
+                  @click="performSvnRevert(repo.url)"
+                >
+                  <RotateCcw :size="16" />
+                </button>
+              </div>
+            </div>
+            <div class="panel-body">
+              <div class="repo-url">{{ repo.url }}</div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -421,6 +577,25 @@ const performMerge = async (): Promise<void> => {
       </div>
     </div>
   </section>
+
+  <!-- SVN Log Dialog -->
+  <SvnLogDialog
+    :visible="showSvnLogDialog"
+    :title="svnLogTitle"
+    :logs="svnCommandLogs"
+    :is-loading="svnLogLoading"
+    :is-success="svnLogSuccess"
+    @close="showSvnLogDialog = false"
+  />
+
+  <!-- Revert Confirm Dialog -->
+  <RevertConfirmDialog
+    :visible="showRevertDialog"
+    :repo-url="revertDialogRepoUrl"
+    :files="revertDialogFiles"
+    @confirm="handleConfirmRevert"
+    @cancel="handleCancelRevert"
+  />
 </template>
 
 <style scoped>
@@ -811,6 +986,155 @@ const performMerge = async (): Promise<void> => {
   grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
   gap: 12px;
   padding: 16px;
+}
+
+.target-repos-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+  padding: 16px;
+}
+
+.target-repo-panel {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-background-primary);
+  overflow: hidden;
+  transition: all 150ms ease;
+}
+
+.target-repo-panel:hover {
+  border-color: var(--el-color-primary);
+  box-shadow: 0 2px 8px rgba(10, 132, 255, 0.1);
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: var(--color-background-secondary);
+  border-bottom: 1px solid var(--color-border);
+  gap: 8px;
+}
+
+.panel-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+
+.repo-checkbox {
+  flex-shrink: 0;
+  cursor: pointer;
+  width: 18px;
+  height: 18px;
+}
+
+.repo-alias {
+  flex: 1;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.update-btn {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  background: var(--color-background-primary);
+  color: var(--color-text-primary);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 120ms ease;
+  font-size: 0;
+}
+
+.update-btn:hover:not(:disabled) {
+  background: var(--el-color-primary);
+  color: #ffffff;
+  border-color: var(--el-color-primary);
+}
+
+.update-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.update-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.update-btn .is-spinning {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.panel-right {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.revert-btn {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  background: var(--color-background-primary);
+  color: var(--color-text-primary);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 120ms ease;
+  font-size: 0;
+}
+
+.revert-btn:hover {
+  background: #ff9500;
+  color: #ffffff;
+  border-color: #ff9500;
+}
+
+.revert-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.panel-body {
+  padding: 12px 16px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
+.repo-url {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: monospace;
 }
 
 .merge-action {

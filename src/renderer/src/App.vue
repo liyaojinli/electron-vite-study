@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, shallowRef, type Component, watch } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import AppMenu from './components/AppMenu.vue'
 import RepositorySettings from './components/RepositorySettings.vue'
 import LocalRepositorySettings from './components/LocalRepositorySettings.vue'
@@ -54,7 +54,10 @@ onMounted(() => {
       <div class="app-main">
         <RepositorySettings v-show="activeMenuId === 'remote-repository'" />
         <LocalRepositorySettings v-show="activeMenuId === 'local-repository'" />
-        <BatchMerge v-show="activeMenuId === 'batch-merge'" />
+        <BatchMerge
+          v-show="activeMenuId === 'batch-merge'"
+          :is-active="activeMenuId === 'batch-merge'"
+        />
       </div>
     </main>
   </div>

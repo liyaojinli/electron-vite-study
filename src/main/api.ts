@@ -147,6 +147,118 @@ export const apiHandlers = {
     }
   },
 
+  svnUpdate: async (
+    repoPath: string
+  ): Promise<{ success: boolean; logs: string[]; message: string }> => {
+    try {
+      const cmd = `svn update "${repoPath}"`
+      const output = execSync(cmd, { encoding: 'utf-8' })
+      const logs = output
+        .trim()
+        .split('\n')
+        .filter((line) => line.trim())
+      return {
+        success: true,
+        logs: logs.length > 0 ? logs : ['更新成功'],
+        message: '更新成功'
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : '更新失败'
+      return {
+        success: false,
+        logs: [errorMessage],
+        message: errorMessage
+      }
+    }
+  },
+
+  getSvnStatus: async (
+    repoPath: string
+  ): Promise<{ files: Array<{ status: string; path: string }>; message: string }> => {
+    try {
+      const cmd = `svn status "${repoPath}"`
+      console.log('[getSvnStatus] Executing:', cmd)
+      const output = execSync(cmd, { encoding: 'utf-8' })
+      console.log('[getSvnStatus] Output:', output)
+
+      const lines = output.split('\n')
+      const files: Array<{ status: string; path: string }> = []
+
+      for (const line of lines) {
+        // Skip empty lines
+        if (!line || line.trim() === '') continue
+
+        // SVN status format: "M       filename"
+        // First character is the status code
+        // Characters 1-8 are spaces (usually 7 spaces)
+        // Starting from character 8 is the filename
+        const status = line[0]
+        const filePath = line.substring(8).trim()
+
+        console.log(`[getSvnStatus] Parsed line: status='${status}' path='${filePath}'`)
+
+        // Only include recognized status codes
+        if (['M', 'A', 'D', 'R', 'C', 'X', '?', '!'].includes(status) && filePath) {
+          files.push({
+            status,
+            path: filePath
+          })
+        }
+      }
+
+      console.log('[getSvnStatus] Found', files.length, 'files')
+      return {
+        files,
+        message: `发现 ${files.length} 个修改的文件`
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : '获取状态失败'
+      console.error('[getSvnStatus] Error:', errorMsg)
+      return {
+        files: [],
+        message: `获取状态失败: ${errorMsg}`
+      }
+    }
+  },
+
+  svnRevert: async (
+    repoPath: string,
+    filePaths?: string[]
+  ): Promise<{ success: boolean; logs: string[]; message: string }> => {
+    try {
+      let cmd: string
+
+      if (filePaths && filePaths.length > 0) {
+        // Revert only specified files
+        const escapedPaths = filePaths.map((p) => `"${p}"`).join(' ')
+        cmd = `cd "${repoPath}" && svn revert ${escapedPaths}`
+      } else {
+        // Revert entire repository
+        cmd = `svn revert -R "${repoPath}"`
+      }
+
+      console.log('[svnRevert] Executing:', cmd)
+      const output = execSync(cmd, { encoding: 'utf-8' })
+      const logs = output
+        .trim()
+        .split('\n')
+        .filter((line) => line.trim())
+
+      return {
+        success: true,
+        logs: logs.length > 0 ? logs : ['恢复成功'],
+        message: '恢复成功'
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : '恢复失败'
+      return {
+        success: false,
+        logs: [errorMessage],
+        message: errorMessage
+      }
+    }
+  },
+
   getSvnChangedFiles: async (
     repoPath: string,
     revisions: number[]
