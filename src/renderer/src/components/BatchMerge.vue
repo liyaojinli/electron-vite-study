@@ -1,0 +1,919 @@
+<script setup lang="ts">
+import { onMounted, ref, computed, watch } from 'vue'
+import {
+  ChevronDown,
+  ChevronRight,
+  AlertCircle,
+  CheckCircle,
+  Play,
+  X,
+  Search
+} from 'lucide-vue-next'
+import type { RepositoryData } from '../../../shared/repository'
+
+interface SvnLogEntry {
+  revision: number
+  author: string
+  date: string
+  message: string
+  selected?: boolean
+}
+
+interface MergeResult {
+  targetRepoName: string
+  targetRepoUrl: string
+  success: boolean
+  message: string
+  output?: string
+}
+
+interface AffectedFile {
+  revision: number
+  files: Array<{ status: string; path: string }>
+}
+
+const api = window.api
+
+const localRepositories = ref<RepositoryData[]>([])
+const svnLogs = ref<SvnLogEntry[]>([])
+const selectedSourceRepo = ref<string>('')
+const selectedTargetRepos = ref<Set<string>>(new Set())
+const mergeResults = ref<MergeResult[]>([])
+const isLoading = ref(false)
+const isLogLoading = ref(false)
+const expandedResults = ref<Set<number>>(new Set())
+const affectedFiles = ref<AffectedFile[]>([])
+const isLoadingFiles = ref(false)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const tableRef = ref<any>(null)
+
+// Search related states
+const searchKeyword = ref<string>('')
+const startDate = ref<string>('')
+const endDate = ref<string>('')
+
+onMounted(async () => {
+  try {
+    localRepositories.value = await api.getLocalRepositories()
+  } catch (error) {
+    console.error('Failed to load local repositories:', error)
+  }
+})
+
+// Auto-load logs when source repo is selected (only initial load)
+watch(selectedSourceRepo, async (newValue, oldValue) => {
+  // Only auto-load on initial selection, not when searching
+  if (newValue && !oldValue) {
+    await loadLogs()
+  } else if (!newValue) {
+    svnLogs.value = []
+    affectedFiles.value = []
+  }
+})
+
+const sourceRepo = computed(() =>
+  localRepositories.value.find((r) => r.url === selectedSourceRepo.value)
+)
+
+const targetRepos = computed(() =>
+  localRepositories.value.filter((r) => selectedTargetRepos.value.has(r.url))
+)
+
+const selectedRevisions = computed(() =>
+  svnLogs.value.filter((log) => log.selected).map((log) => log.revision)
+)
+
+// Auto-load changed files when revisions are selected
+watch(selectedRevisions, async (newValue) => {
+  if (newValue.length > 0 && selectedSourceRepo.value) {
+    isLoadingFiles.value = true
+    try {
+      const repo = localRepositories.value.find((r) => r.url === selectedSourceRepo.value)
+      if (repo) {
+        affectedFiles.value = await api.getSvnChangedFiles(repo.url, newValue)
+      }
+    } catch (error) {
+      console.error('Failed to load changed files:', error)
+      affectedFiles.value = []
+    } finally {
+      isLoadingFiles.value = false
+    }
+  } else {
+    affectedFiles.value = []
+  }
+})
+
+const canMerge = computed(
+  () =>
+    selectedSourceRepo.value &&
+    selectedTargetRepos.value.size > 0 &&
+    selectedRevisions.value.length > 0
+)
+
+const formatDate = (dateString: string): string => {
+  try {
+    const date = new Date(dateString)
+    // 转换为中国上海时区 (UTC+8)
+    return date.toLocaleString('zh-CN', {
+      timeZone: 'Asia/Shanghai',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false
+    })
+  } catch (error) {
+    console.error('Failed to format date:', error)
+    return dateString
+  }
+}
+
+const handleSelectionChange = (selection: SvnLogEntry[]): void => {
+  // Clear all selections first
+  svnLogs.value.forEach((log) => {
+    log.selected = false
+  })
+  // Set selected items
+  selection.forEach((selectedLog) => {
+    const log = svnLogs.value.find((l) => l.revision === selectedLog.revision)
+    if (log) {
+      log.selected = true
+    }
+  })
+}
+
+const toggleAllSelections = (): void => {
+  if (!tableRef.value) return
+  
+  // Clear all selections
+  tableRef.value.clearSelection()
+  svnLogs.value.forEach((log) => {
+    log.selected = false
+  })
+}
+
+const loadLogs = async (): Promise<void> => {
+  if (!selectedSourceRepo.value) return
+
+  isLogLoading.value = true
+  try {
+    const repo = localRepositories.value.find((r) => r.url === selectedSourceRepo.value)
+    if (repo) {
+      svnLogs.value = await api.getSvnLog(repo.url, 100)
+    }
+  } catch (error) {
+    console.error('Failed to load SVN logs:', error)
+    svnLogs.value = []
+  } finally {
+    isLogLoading.value = false
+  }
+}
+
+const performSearch = async (): Promise<void> => {
+  if (!selectedSourceRepo.value) return
+
+  isLogLoading.value = true
+  try {
+    const repo = localRepositories.value.find((r) => r.url === selectedSourceRepo.value)
+    if (repo) {
+      svnLogs.value = await api.getSvnLog(
+        repo.url,
+        100,
+        searchKeyword.value,
+        startDate.value,
+        endDate.value
+      )
+      // Clear selections and affected files when new search is performed
+      svnLogs.value.forEach((log) => {
+        log.selected = false
+      })
+      affectedFiles.value = []
+    }
+  } catch (error) {
+    console.error('Failed to search SVN logs:', error)
+    svnLogs.value = []
+  } finally {
+    isLogLoading.value = false
+  }
+}
+
+const toggleTargetRepo = (repoUrl: string): void => {
+  if (selectedTargetRepos.value.has(repoUrl)) {
+    selectedTargetRepos.value.delete(repoUrl)
+  } else {
+    selectedTargetRepos.value.add(repoUrl)
+  }
+}
+
+const toggleResultExpanded = (index: number): void => {
+  if (expandedResults.value.has(index)) {
+    expandedResults.value.delete(index)
+  } else {
+    expandedResults.value.add(index)
+  }
+}
+
+const performMerge = async (): Promise<void> => {
+  if (!canMerge.value || !sourceRepo.value) return
+
+  isLoading.value = true
+  mergeResults.value = []
+
+  try {
+    const selectedLog = svnLogs.value.filter((l) => l.selected)[0]
+    mergeResults.value = await api.performBatchMerge(
+      sourceRepo.value,
+      targetRepos.value,
+      selectedRevisions.value,
+      selectedLog?.message || ''
+    )
+  } catch (error) {
+    console.error('Merge failed:', error)
+  } finally {
+    isLoading.value = false
+  }
+}
+</script>
+
+<template>
+  <section class="batch-merge">
+    <div class="batch-merge-container">
+      <h2 class="section-title">批量合并</h2>
+
+      <!-- Source Repository Selection -->
+      <div class="merge-section">
+        <h3 class="section-subtitle">步骤 1: 选择源仓库</h3>
+        <div class="control-group">
+          <label class="control-label">源仓库:</label>
+          <select v-model="selectedSourceRepo" class="app-select">
+            <option value="">-- 选择一个本地仓库 --</option>
+            <option v-for="repo in localRepositories" :key="repo.url" :value="repo.url">
+              {{ repo.alias }} ({{ repo.url }})
+            </option>
+          </select>
+        </div>
+      </div>
+
+      <!-- SVN Logs Section -->
+      <div v-if="selectedSourceRepo" class="merge-section">
+        <h3 class="section-subtitle">步骤 2: 选择要合并的提交</h3>
+        <div class="logs-wrapper">
+          <div class="logs-table-container">
+            <div class="logs-toolbar">
+              <div class="toolbar-left">
+                <button class="app-button btn-small" @click="toggleAllSelections">
+                  <X :size="14" />
+                  清空
+                </button>
+              </div>
+              <div class="toolbar-right">
+                <input
+                  v-model="searchKeyword"
+                  type="text"
+                  placeholder="搜索(提交人/信息)"
+                  class="search-input"
+                  @keyup.enter="performSearch"
+                />
+                <input v-model="startDate" type="date" class="date-input" @change="performSearch" />
+                <span class="date-separator">至</span>
+                <input v-model="endDate" type="date" class="date-input" @change="performSearch" />
+                <button class="app-button btn-small is-primary" @click="performSearch">
+                  <Search :size="14" />
+                  搜索
+                </button>
+              </div>
+            </div>
+            <div class="logs-table-wrapper">
+              <!-- Loading overlay -->
+              <div v-if="isLogLoading" class="table-loading-overlay">
+                <div class="loading-spinner">加载中...</div>
+              </div>
+              <el-table
+                ref="tableRef"
+                :data="svnLogs"
+                stripe
+                border
+                size="small"
+                height="100%"
+                style="width: 100%"
+                class="compact-table"
+                @selection-change="handleSelectionChange"
+              >
+                <el-table-column type="selection" width="40" align="center" />
+                <el-table-column prop="revision" label="Revision" width="80" align="center">
+                  <template #default="{ row }">
+                    <span style="color: var(--el-color-primary); font-weight: 600">
+                      r{{ row.revision }}
+                    </span>
+                  </template>
+                </el-table-column>
+                <el-table-column
+                  prop="message"
+                  label="提交信息"
+                  min-width="200"
+                  show-overflow-tooltip
+                />
+                <el-table-column prop="author" label="提交人" width="100" show-overflow-tooltip />
+                <el-table-column prop="date" label="提交时间" width="160">
+                  <template #default="{ row }">
+                    {{ formatDate(row.date) }}
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+          </div>
+          <div class="logs-affected-files">
+            <div class="affected-files-header">影响文件</div>
+            <div class="affected-files-content">
+              <div v-if="selectedRevisions.length === 0" class="affected-files-empty">
+                选择提交记录后显示
+              </div>
+              <div v-else-if="isLoadingFiles" class="affected-files-empty">加载文件中...</div>
+              <div v-else-if="affectedFiles.length === 0" class="affected-files-empty">
+                无文件改动
+              </div>
+              <div v-else class="affected-files-list">
+                <div
+                  v-for="revisionGroup in affectedFiles"
+                  :key="revisionGroup.revision"
+                  class="revision-group"
+                >
+                  <div class="revision-header">--- Revision {{ revisionGroup.revision }} ---</div>
+                  <div
+                    v-for="file in revisionGroup.files"
+                    :key="file.path"
+                    class="file-line"
+                    :class="`status-${file.status}`"
+                  >
+                    <span class="file-status">{{ file.status }}</span>
+                    <span class="file-path">{{ file.path }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Target Repositories Selection -->
+      <div v-if="selectedSourceRepo" class="merge-section">
+        <h3 class="section-subtitle">步骤 3: 选择目标仓库</h3>
+        <div class="target-repos">
+          <label
+            v-for="repo in localRepositories.filter((r) => r.url !== selectedSourceRepo)"
+            :key="repo.url"
+            class="checkbox-label"
+          >
+            <input
+              type="checkbox"
+              :checked="selectedTargetRepos.has(repo.url)"
+              @change="toggleTargetRepo(repo.url)"
+            />
+            <span>{{ repo.alias }} ({{ repo.url }})</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Merge Action -->
+      <div v-if="selectedSourceRepo" class="merge-section merge-action">
+        <button
+          :disabled="!canMerge || isLoading"
+          class="app-button is-primary is-large"
+          @click="performMerge"
+        >
+          <Play :size="16" />
+          {{ isLoading ? '合并中...' : '执行合并' }}
+        </button>
+      </div>
+
+      <!-- Merge Results -->
+      <div v-if="mergeResults.length > 0" class="merge-section">
+        <h3 class="section-subtitle">合并结果</h3>
+        <div class="results-container">
+          <div
+            v-for="(result, index) in mergeResults"
+            :key="index"
+            class="result-item"
+            :class="{ 'is-success': result.success, 'is-error': !result.success }"
+          >
+            <button type="button" class="result-header" @click="toggleResultExpanded(index)">
+              <component :is="expandedResults.has(index) ? ChevronDown : ChevronRight" :size="16" />
+              <component
+                :is="result.success ? CheckCircle : AlertCircle"
+                :size="16"
+                :class="{ 'is-success': result.success, 'is-error': !result.success }"
+              />
+              <span class="result-title">{{ result.targetRepoName }}</span>
+              <span class="result-status">
+                {{ result.success ? '成功' : '失败' }}
+              </span>
+            </button>
+            <div v-if="expandedResults.has(index)" class="result-details">
+              <div class="result-message">{{ result.message }}</div>
+              <div v-if="result.output" class="result-output">
+                <pre>{{ result.output }}</pre>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+</template>
+
+<style scoped>
+.batch-merge {
+  width: 100%;
+}
+
+.batch-merge-container {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.section-title {
+  font-size: 24px;
+  font-weight: 600;
+  margin-bottom: 24px;
+  color: var(--color-text-primary);
+}
+
+.section-subtitle {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 0;
+  color: var(--color-text-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.merge-section {
+  margin-bottom: 24px;
+  background: var(--color-background-secondary);
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.merge-section .section-subtitle {
+  padding: 16px;
+  border-bottom: 1px solid var(--color-border);
+  margin: 0;
+  background: linear-gradient(
+    135deg,
+    var(--color-background-secondary) 0%,
+    var(--color-background-hover) 100%
+  );
+}
+
+.merge-section > div:not(.section-subtitle):nth-of-type(n + 2) {
+  padding: 16px;
+}
+
+.control-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+}
+
+.control-label {
+  min-width: 100px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+}
+
+.app-select {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-background-primary);
+  color: var(--color-text-primary);
+  font-size: 14px;
+}
+
+.app-select:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px var(--color-primary-transparent);
+}
+
+.app-button {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  background: var(--color-background-hover);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.2s;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.app-button:hover:not(:disabled) {
+  background: var(--color-primary);
+  color: white;
+}
+
+.app-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.app-button.is-primary {
+  background: var(--color-primary);
+  color: white;
+}
+
+.app-button.is-large {
+  padding: 12px 24px;
+  font-size: 16px;
+}
+
+.logs-container {
+  margin-top: 0;
+  padding: 16px;
+}
+
+.logs-loading {
+  padding: 16px;
+  text-align: center;
+  color: var(--color-text-secondary);
+  font-size: 14px;
+}
+
+.logs-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.logs-wrapper {
+  display: flex;
+  gap: 16px;
+  padding: 16px;
+  height: 500px;
+  overflow: hidden;
+}
+
+.logs-table-container {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.logs-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: var(--color-background-secondary);
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.toolbar-left {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.toolbar-right {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.search-input {
+  padding: 4px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-background-primary);
+  color: var(--color-text-primary);
+  font-size: 12px;
+  width: 160px;
+}
+
+.search-input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+.date-input {
+  padding: 4px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-background-primary);
+  color: var(--color-text-primary);
+  font-size: 12px;
+  width: 120px;
+}
+
+.date-input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+.date-separator {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.btn-small {
+  padding: 4px 12px;
+  font-size: 12px;
+}
+
+.logs-table-wrapper {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+}
+
+.table-loading-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(var(--color-background-primary-rgb), 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+  backdrop-filter: blur(3px);
+}
+
+.loading-spinner {
+  padding: 16px 24px;
+  background: var(--color-background-secondary);
+  border-radius: 6px;
+  border: 1px solid var(--color-border);
+  color: var(--color-text-primary);
+  font-size: 14px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.table-empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  padding: 48px 16px;
+}
+
+.compact-table {
+  font-size: 11px;
+}
+
+.compact-table .el-table__header-wrapper,
+.compact-table .el-table__body-wrapper {
+  font-size: 11px;
+}
+
+.logs-affected-files {
+  width: 320px;
+  flex-shrink: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-background-primary);
+}
+
+.affected-files-header {
+  padding: 8px 12px;
+  background: var(--color-background-secondary);
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.affected-files-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  font-size: 11px;
+  color: var(--color-text-primary);
+}
+
+.affected-files-empty {
+  color: var(--color-text-secondary);
+  text-align: center;
+  padding: 12px;
+}
+
+.affected-files-list {
+  font-family: 'Courier New', monospace;
+  line-height: 1.4;
+}
+
+.revision-group {
+  margin-bottom: 4px;
+}
+
+.revision-header {
+  color: var(--color-text-secondary);
+  padding: 4px 0;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.file-line {
+  padding: 2px 0;
+  display: flex;
+  gap: 4px;
+  word-break: break-all;
+}
+
+.file-status {
+  display: inline-block;
+  width: 12px;
+  flex-shrink: 0;
+  font-weight: 600;
+}
+
+.file-path {
+  flex: 1;
+  overflow-wrap: break-word;
+}
+
+/* 根据操作类型着色 */
+.file-line.status-D {
+  color: #ef4444;
+}
+
+.file-line.status-D .file-status {
+  color: #dc2626;
+}
+
+.file-line.status-U {
+  color: #eab308;
+}
+
+.file-line.status-U .file-status {
+  color: #ca8a04;
+}
+
+.file-line.status-A {
+  color: #22c55e;
+}
+
+.file-line.status-A .file-status {
+  color: #16a34a;
+}
+
+.file-line.status-M {
+  color: #3b82f6;
+}
+
+.file-line.status-M .file-status {
+  color: #1d4ed8;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.checkbox-label input[type='checkbox'] {
+  cursor: pointer;
+}
+
+.target-repos {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 12px;
+  padding: 16px;
+}
+
+.merge-action {
+  text-align: center;
+  padding: 16px;
+}
+
+.results-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+}
+
+.result-item {
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.result-item.is-success {
+  border-color: var(--color-success);
+  background: var(--color-success-transparent);
+}
+
+.result-item.is-error {
+  border-color: var(--color-error);
+  background: var(--color-error-transparent);
+}
+
+.result-header {
+  width: 100%;
+  padding: 12px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-text-primary);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.result-header:hover {
+  background: var(--color-background-hover);
+}
+
+.result-title {
+  flex: 1;
+  text-align: left;
+}
+
+.result-status {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--color-background-hover);
+}
+
+.result-item.is-success .result-status {
+  color: var(--color-success);
+}
+
+.result-item.is-error .result-status {
+  color: var(--color-error);
+}
+
+.result-details {
+  padding: 12px;
+  border-top: 1px solid var(--color-border);
+  background: var(--color-background-primary);
+}
+
+.result-message {
+  font-size: 13px;
+  color: var(--color-text-primary);
+  margin-bottom: 8px;
+}
+
+.result-output {
+  max-height: 200px;
+  overflow-y: auto;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  padding: 8px;
+  border-radius: 4px;
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+}
+
+.result-output pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.is-success {
+  color: var(--color-success);
+}
+
+.is-error {
+  color: var(--color-error);
+}
+</style>

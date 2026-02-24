@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Cloud, HardDrive } from 'lucide-vue-next'
+import { Cloud, HardDrive, GitMerge } from 'lucide-vue-next'
 
 type MenuItem = {
   id: string
@@ -50,6 +50,7 @@ const handleToggleTheme = (): void => {
       >
         <Cloud v-if="item.id === 'remote-repository'" :size="16" :stroke-width="2" />
         <HardDrive v-else-if="item.id === 'local-repository'" :size="16" :stroke-width="2" />
+        <GitMerge v-else-if="item.id === 'batch-merge'" :size="16" :stroke-width="2" />
         <span class="app-menu-item-label">{{ item.label }}</span>
       </button>
     </nav>

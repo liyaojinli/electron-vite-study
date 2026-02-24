@@ -3,14 +3,15 @@ import { onMounted, ref, shallowRef, type Component, watch } from 'vue'
 import AppMenu from './components/AppMenu.vue'
 import RepositorySettings from './components/RepositorySettings.vue'
 import LocalRepositorySettings from './components/LocalRepositorySettings.vue'
+import BatchMerge from './components/BatchMerge.vue'
 
 const menuItems = [
   { id: 'remote-repository', label: '远程仓库设置' },
-  { id: 'local-repository', label: '本地仓库设置' }
+  { id: 'local-repository', label: '本地仓库设置' },
+  { id: 'batch-merge', label: '批量合并' }
 ]
 const activeMenuId = ref(menuItems[0].id)
 const isDark = ref(false)
-const activeComponent = shallowRef<Component | null>(RepositorySettings)
 
 const applyTheme = (dark: boolean): void => {
   document.documentElement.dataset.theme = dark ? 'dark' : 'light'
@@ -22,11 +23,6 @@ const toggleTheme = (): void => {
 
 const handleMenuSelect = (id: string): void => {
   activeMenuId.value = id
-  if (id === 'remote-repository') {
-    activeComponent.value = RepositorySettings
-  } else if (id === 'local-repository') {
-    activeComponent.value = LocalRepositorySettings
-  }
 }
 
 onMounted(() => {
@@ -56,7 +52,9 @@ onMounted(() => {
     />
     <main class="app-content flex flex-1 p-6">
       <div class="app-main">
-        <component :is="activeComponent" v-if="activeComponent" />
+        <RepositorySettings v-show="activeMenuId === 'remote-repository'" />
+        <LocalRepositorySettings v-show="activeMenuId === 'local-repository'" />
+        <BatchMerge v-show="activeMenuId === 'batch-merge'" />
       </div>
     </main>
   </div>
