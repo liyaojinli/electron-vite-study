@@ -1,15 +1,24 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { Repository, type RepositoryData } from '../../../shared/repository'
-import { Plus, Eye, EyeOff, Check, Trash2 } from 'lucide-vue-next'
+import { Plus, Check, Trash2, FolderOpen } from 'lucide-vue-next'
 
-const passwordVisibleIndices = ref(new Set<number>())
+interface LocalAPI {
+  listLocalRepositories(): Promise<RepositoryData[]>
+  insertLocalRepository(index: number, repo: RepositoryData): Promise<RepositoryData[]>
+  updateLocalRepository(index: number, repo: RepositoryData): Promise<RepositoryData[]>
+  deleteLocalRepository(index: number): Promise<RepositoryData[]>
+  verifyLocalRepository(repo: RepositoryData): Promise<{ ok: boolean; message?: string }>
+  selectDirectory(): Promise<{ success: boolean; path?: string }>
+}
+
+const api = (window as unknown as { api: LocalAPI }).api
 const repositories = ref<Repository[]>([])
 const baselineData = ref<Array<RepositoryData | null>>([])
 const newRows = ref(new Set<Repository>())
 
 const resetPasswordVisibility = (): void => {
-  passwordVisibleIndices.value = new Set()
+  // No password field for local repositories
 }
 
 const updateRepositories = (data: RepositoryData[]): void => {
@@ -21,15 +30,15 @@ const updateRepositories = (data: RepositoryData[]): void => {
 
 const loadRepositories = async (): Promise<void> => {
   try {
-    const result = await window.api.listRepositories()
+    const result = await api.listLocalRepositories()
     updateRepositories(result)
   } catch (error) {
-    console.error('Failed to load repositories:', error)
+    console.error('Failed to load local repositories:', error)
   }
 }
 
 const addRepositoryAfter = (index: number): void => {
-  const repo = new Repository('', '', '', '')
+  const repo = new Repository('', '', '', '', true)
   repositories.value.splice(index + 1, 0, repo)
   baselineData.value.splice(index + 1, 0, null)
   newRows.value.add(repo)
@@ -37,7 +46,7 @@ const addRepositoryAfter = (index: number): void => {
 }
 
 const addFirstRepository = (): void => {
-  const repo = new Repository('', '', '', '')
+  const repo = new Repository('', '', '', '', true)
   repositories.value.splice(0, 0, repo)
   baselineData.value.splice(0, 0, null)
   newRows.value.add(repo)
@@ -48,17 +57,17 @@ const saveRepository = async (index: number): Promise<void> => {
   try {
     const repo = repositories.value[index]
     const payload = repo.toJSON()
-    const verifyResult = await window.api.verifyRepository(payload)
+    const verifyResult = await api.verifyLocalRepository(payload)
     if (!verifyResult.ok) {
-      alert(verifyResult.message || 'SVN 连接验证失败。')
+      alert(verifyResult.message || '本地路径验证失败。')
       return
     }
     const result = newRows.value.has(repo)
-      ? await window.api.insertRepository(index, payload)
-      : await window.api.updateRepository(index, payload)
+      ? await api.insertLocalRepository(index, payload)
+      : await api.updateLocalRepository(index, payload)
     updateRepositories(result)
   } catch (error) {
-    console.error('Failed to save repository:', error)
+    console.error('Failed to save local repository:', error)
   }
 }
 
@@ -71,19 +80,11 @@ const removeRepository = async (index: number): Promise<void> => {
       newRows.value.delete(repo)
       resetPasswordVisibility()
     } else {
-      const result = await window.api.deleteRepository(index)
+      const result = await api.deleteLocalRepository(index)
       updateRepositories(result)
     }
   } catch (error) {
-    console.error('Failed to remove repository:', error)
-  }
-}
-
-const togglePasswordVisibility = (index: number): void => {
-  if (passwordVisibleIndices.value.has(index)) {
-    passwordVisibleIndices.value.delete(index)
-  } else {
-    passwordVisibleIndices.value.add(index)
+    console.error('Failed to remove local repository:', error)
   }
 }
 
@@ -96,6 +97,17 @@ const isDirty = (index: number): boolean => {
   return JSON.stringify(current) !== JSON.stringify(baseline)
 }
 
+const selectDirectoryForRepo = async (index: number): Promise<void> => {
+  try {
+    const result = await api.selectDirectory()
+    if (result.success && result.path) {
+      repositories.value[index].url = result.path
+    }
+  } catch (error) {
+    console.error('Failed to select directory:', error)
+  }
+}
+
 onMounted(() => {
   loadRepositories()
 })
@@ -104,21 +116,19 @@ onMounted(() => {
 <template>
   <section class="app-panel">
     <div class="app-panel-header app-panel-header-row">
-      <span class="app-panel-title">管理 SVN 远程仓库，支持添加、编辑和删除。</span>
+      <span class="app-panel-title">管理本地 SVN 仓库，支持添加、编辑和删除。</span>
     </div>
     <div class="app-panel-body">
-      <div class="repo-table">
+      <div class="repo-table local-repo-table">
         <div class="repo-row repo-header">
           <div class="repo-cell">别名</div>
-          <div class="repo-cell">地址</div>
-          <div class="repo-cell">用户名</div>
-          <div class="repo-cell">密码</div>
+          <div class="repo-cell">本地路径</div>
           <div class="repo-cell repo-cell-center">操作</div>
         </div>
         <div class="repo-rows">
           <div v-if="repositories.length === 0" class="repo-row repo-empty">
             <div class="repo-cell repo-empty-text">
-              暂无仓库配置
+              暂无本地仓库配置
               <button
                 type="button"
                 class="repo-button icon-only is-primary"
@@ -134,32 +144,20 @@ onMounted(() => {
               <input v-model="repo.alias" class="app-input" type="text" placeholder="仓库别名" />
             </div>
             <div class="repo-cell">
-              <input
-                v-model="repo.url"
-                class="app-input"
-                type="text"
-                placeholder="https://svn.example.com"
-              />
-            </div>
-            <div class="repo-cell">
-              <input v-model="repo.username" class="app-input" type="text" placeholder="username" />
-            </div>
-            <div class="repo-cell">
               <div class="app-input-group">
                 <input
-                  v-model="repo.password"
+                  v-model="repo.url"
                   class="app-input"
-                  :type="passwordVisibleIndices.has(index) ? 'text' : 'password'"
-                  placeholder="••••••"
+                  type="text"
+                  placeholder="/path/to/svn/repo"
                 />
                 <button
                   type="button"
                   class="app-input-action icon-only"
-                  :aria-label="passwordVisibleIndices.has(index) ? '隐藏密码' : '显示密码'"
-                  @click="togglePasswordVisibility(index)"
+                  aria-label="选择目录"
+                  @click="selectDirectoryForRepo(index)"
                 >
-                  <Eye v-if="passwordVisibleIndices.has(index)" :size="18" :stroke-width="2" />
-                  <EyeOff v-else :size="18" :stroke-width="2" />
+                  <FolderOpen :size="18" :stroke-width="2" />
                 </button>
               </div>
             </div>
@@ -198,3 +196,8 @@ onMounted(() => {
     </div>
   </section>
 </template>
+<style scoped>
+.local-repo-table :deep(.repo-row) {
+  grid-template-columns: 1.1fr 2fr 110px;
+}
+</style>

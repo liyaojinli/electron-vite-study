@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron'
+import { ipcMain, dialog, BrowserWindow } from 'electron'
 import type { RepositoryData } from '../shared/repository'
 import {
   createRepository,
@@ -6,11 +6,18 @@ import {
   deleteRepository,
   listRepositories,
   updateRepository,
-  verifyRepository
+  verifyRepository,
+  createLocalRepository,
+  insertLocalRepository,
+  deleteLocalRepository,
+  listLocalRepositories,
+  updateLocalRepository,
+  verifyLocalRepository
 } from './repository/repository'
 
 // ========== API 定义区（只在这里添加新 API）==========
 export const apiHandlers = {
+  // Remote Repository APIs
   listRepositories: async () => {
     return listRepositories()
   },
@@ -28,13 +35,43 @@ export const apiHandlers = {
   },
   verifyRepository: async (repo: RepositoryData) => {
     return verifyRepository(repo)
-  }
+  },
 
-  // 添加新 API 只需在这里添加方法即可，无需修改其他文件！
-  // 例如：
-  // readFile: async (path: string) => {
-  //   return fs.readFileSync(path, 'utf-8')
-  // }
+  // Local Repository APIs
+  listLocalRepositories: async () => {
+    return listLocalRepositories()
+  },
+  createLocalRepository: async (repo: RepositoryData) => {
+    return createLocalRepository(repo)
+  },
+  insertLocalRepository: async (index: number, repo: RepositoryData) => {
+    return insertLocalRepository(index, repo)
+  },
+  updateLocalRepository: async (index: number, repo: RepositoryData) => {
+    return updateLocalRepository(index, repo)
+  },
+  deleteLocalRepository: async (index: number) => {
+    return deleteLocalRepository(index)
+  },
+  verifyLocalRepository: async (repo: RepositoryData) => {
+    return verifyLocalRepository(repo)
+  },
+
+  // File Dialog APIs
+  selectDirectory: async (): Promise<{ success: boolean; path?: string }> => {
+    const focusedWindow = BrowserWindow.getFocusedWindow()
+    if (!focusedWindow) {
+      return { success: false }
+    }
+    const result = await dialog.showOpenDialog(focusedWindow, {
+      properties: ['openDirectory'],
+      message: '选择本地 SVN 仓库目录'
+    })
+    if (result.canceled || result.filePaths.length === 0) {
+      return { success: false }
+    }
+    return { success: true, path: result.filePaths[0] }
+  }
 }
 
 // 自动提取所有 API 方法名

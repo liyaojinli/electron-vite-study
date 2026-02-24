@@ -2,8 +2,12 @@
 import { onMounted, ref, shallowRef, type Component, watch } from 'vue'
 import AppMenu from './components/AppMenu.vue'
 import RepositorySettings from './components/RepositorySettings.vue'
+import LocalRepositorySettings from './components/LocalRepositorySettings.vue'
 
-const menuItems = [{ id: 'repository-settings', label: '仓库设置' }]
+const menuItems = [
+  { id: 'remote-repository', label: '远程仓库设置' },
+  { id: 'local-repository', label: '本地仓库设置' }
+]
 const activeMenuId = ref(menuItems[0].id)
 const isDark = ref(false)
 const activeComponent = shallowRef<Component | null>(RepositorySettings)
@@ -18,7 +22,11 @@ const toggleTheme = (): void => {
 
 const handleMenuSelect = (id: string): void => {
   activeMenuId.value = id
-  activeComponent.value = id === 'repository-settings' ? RepositorySettings : null
+  if (id === 'remote-repository') {
+    activeComponent.value = RepositorySettings
+  } else if (id === 'local-repository') {
+    activeComponent.value = LocalRepositorySettings
+  }
 }
 
 onMounted(() => {

@@ -4,17 +4,22 @@ import fs from 'fs/promises'
 import path from 'path'
 import { Repository, type RepositoryData } from '../../shared/repository'
 
-const repositoryFileName = 'repositories.json'
+const remoteRepositoryFileName = 'repositories.json'
+const localRepositoryFileName = 'local-repositories.json'
 
 const getRepositoryFilePath = (): string => {
-  return path.join(app.getPath('userData'), repositoryFileName)
+  return path.join(app.getPath('userData'), remoteRepositoryFileName)
+}
+
+const getLocalRepositoryFilePath = (): string => {
+  return path.join(app.getPath('userData'), localRepositoryFileName)
 }
 
 const normalizeString = (value: unknown): string => {
   return typeof value === 'string' ? value : ''
 }
 
-const toRepository = (value: unknown): Repository | null => {
+const toRepository = (value: unknown, local: boolean = false): Repository | null => {
   if (!value || typeof value !== 'object') {
     return null
   }
@@ -24,10 +29,12 @@ const toRepository = (value: unknown): Repository | null => {
     normalizeString(data.url),
     normalizeString(data.username),
     normalizeString(data.password),
-    normalizeString(data.alias)
+    normalizeString(data.alias),
+    local
   )
 }
 
+// Remote Repository Operations
 const readRepositories = async (): Promise<Repository[]> => {
   const filePath = getRepositoryFilePath()
   try {
@@ -37,7 +44,7 @@ const readRepositories = async (): Promise<Repository[]> => {
       return []
     }
 
-    return parsed.map(toRepository).filter((repo): repo is Repository => repo !== null)
+    return parsed.map((item) => toRepository(item, false)).filter((repo): repo is Repository => repo !== null)
   } catch (error) {
     if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
       return []
@@ -131,11 +138,97 @@ const verifyRepository = async (
   })
 }
 
+// Local Repository Operations
+const readLocalRepositories = async (): Promise<Repository[]> => {
+  const filePath = getLocalRepositoryFilePath()
+  try {
+    const content = await fs.readFile(filePath, 'utf-8')
+    const parsed = JSON.parse(content)
+    if (!Array.isArray(parsed)) {
+      return []
+    }
+
+    return parsed.map((item) => toRepository(item, true)).filter((repo): repo is Repository => repo !== null)
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+      return []
+    }
+    throw error
+  }
+}
+
+const writeLocalRepositories = async (repos: Repository[]): Promise<void> => {
+  const filePath = getLocalRepositoryFilePath()
+  const data = repos.map((repo) => repo.toJSON())
+  await fs.mkdir(path.dirname(filePath), { recursive: true })
+  await fs.writeFile(filePath, JSON.stringify(data, null, 2), 'utf-8')
+}
+
+const listLocalRepositories = async (): Promise<RepositoryData[]> => {
+  const repos = await readLocalRepositories()
+  return repos.map((repo) => repo.toJSON())
+}
+
+const createLocalRepository = async (repo: RepositoryData): Promise<RepositoryData[]> => {
+  const repos = await readLocalRepositories()
+  repos.push(Repository.fromJSON({ ...repo, local: true }))
+  await writeLocalRepositories(repos)
+  return repos.map((item) => item.toJSON())
+}
+
+const insertLocalRepository = async (index: number, repo: RepositoryData): Promise<RepositoryData[]> => {
+  const repos = await readLocalRepositories()
+  if (index < 0 || index > repos.length) {
+    throw new Error('Local repository index out of range.')
+  }
+  repos.splice(index, 0, Repository.fromJSON({ ...repo, local: true }))
+  await writeLocalRepositories(repos)
+  return repos.map((item) => item.toJSON())
+}
+
+const updateLocalRepository = async (index: number, repo: RepositoryData): Promise<RepositoryData[]> => {
+  const repos = await readLocalRepositories()
+  if (index < 0 || index >= repos.length) {
+    throw new Error('Local repository index out of range.')
+  }
+  repos[index] = Repository.fromJSON({ ...repo, local: true })
+  await writeLocalRepositories(repos)
+  return repos.map((item) => item.toJSON())
+}
+
+const deleteLocalRepository = async (index: number): Promise<RepositoryData[]> => {
+  const repos = await readLocalRepositories()
+  if (index < 0 || index >= repos.length) {
+    throw new Error('Local repository index out of range.')
+  }
+  repos.splice(index, 1)
+  await writeLocalRepositories(repos)
+  return repos.map((item) => item.toJSON())
+}
+
+const verifyLocalRepository = async (repo: RepositoryData): Promise<{ ok: boolean; message?: string }> => {
+  try {
+    await fs.stat(repo.url)
+    return { ok: true }
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+      return { ok: false, message: '本地路径不存在' }
+    }
+    return { ok: false, message: error instanceof Error ? error.message : '路径验证失败' }
+  }
+}
+
 export {
   listRepositories,
   createRepository,
   insertRepository,
   updateRepository,
   deleteRepository,
-  verifyRepository
+  verifyRepository,
+  listLocalRepositories,
+  createLocalRepository,
+  insertLocalRepository,
+  updateLocalRepository,
+  deleteLocalRepository,
+  verifyLocalRepository
 }

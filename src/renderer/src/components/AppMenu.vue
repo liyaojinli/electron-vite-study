@@ -1,7 +1,10 @@
 <script setup lang="ts">
+import { Cloud, HardDrive } from 'lucide-vue-next'
+
 type MenuItem = {
   id: string
   label: string
+  icon?: typeof Cloud
 }
 
 const props = defineProps<{ items: MenuItem[]; activeId?: string; isDark: boolean }>()
@@ -45,8 +48,23 @@ const handleToggleTheme = (): void => {
         :class="props.activeId === item.id ? 'is-active' : ''"
         @click="handleSelect(item.id)"
       >
-        {{ item.label }}
+        <Cloud v-if="item.id === 'remote-repository'" :size="16" :stroke-width="2" />
+        <HardDrive v-else-if="item.id === 'local-repository'" :size="16" :stroke-width="2" />
+        <span class="app-menu-item-label">{{ item.label }}</span>
       </button>
     </nav>
   </aside>
 </template>
+
+<style scoped>
+.app-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.app-menu-item-label {
+  flex: 1;
+  text-align: left;
+}
+</style>

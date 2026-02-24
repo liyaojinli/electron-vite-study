@@ -3,6 +3,7 @@ type RepositoryData = {
   username: string
   password: string
   alias: string
+  local?: boolean
 }
 
 class Repository {
@@ -10,12 +11,20 @@ class Repository {
   username: string
   password: string
   alias: string
+  local: boolean
 
-  constructor(url: string, username: string, password: string, alias: string) {
+  constructor(
+    url: string,
+    username: string,
+    password: string,
+    alias: string,
+    local: boolean = false
+  ) {
     this.url = url
     this.username = username
     this.password = password
     this.alias = alias
+    this.local = local
   }
 
   getUrl(): string {
@@ -34,17 +43,22 @@ class Repository {
     return this.alias
   }
 
+  isLocal(): boolean {
+    return this.local
+  }
+
   toJSON(): RepositoryData {
     return {
       url: this.url,
       username: this.username,
       password: this.password,
-      alias: this.alias
+      alias: this.alias,
+      local: this.local
     }
   }
 
   static fromJSON(data: RepositoryData): Repository {
-    return new Repository(data.url, data.username, data.password, data.alias)
+    return new Repository(data.url, data.username, data.password, data.alias, data.local || false)
   }
 }
 

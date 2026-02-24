@@ -103,7 +103,6 @@ body {
   flex-direction: column;
   gap: 16px;
   width: 100%;
-  max-width: 900px;
   margin: 0 auto;
 }
 
@@ -177,6 +176,9 @@ body {
   background: var(--panel-bg);
   box-shadow: var(--shadow-panel);
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
 }
 
 .app-panel-header {
@@ -215,6 +217,9 @@ body {
 
 .app-panel-body {
   padding: 18px 16px 24px;
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
 }
 
 .app-panel-text {
@@ -292,11 +297,22 @@ body {
   border: 1px solid var(--border);
   border-radius: 12px;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.repo-rows {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .repo-row {
   display: grid;
-  grid-template-columns: 1.1fr 2fr 1fr 1.2fr 0.9fr;
+  grid-template-columns: 1.1fr 2fr 1fr 1.2fr 110px;
   align-items: center;
   gap: 8px;
   padding: 10px 12px;
@@ -426,17 +442,10 @@ body {
   background: var(--menu-hover);
 }
 
-.icon-svg {
+.icon-only svg {
   width: 18px;
   height: 18px;
   display: block;
-}
-
-.icon-svg path,
-.icon-svg circle {
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.4;
 }
 
 .app-switch {
