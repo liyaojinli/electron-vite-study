@@ -14,6 +14,7 @@ import {
 import type { RepositoryData } from '../../../shared/repository'
 import SvnLogDialog from './SvnLogDialog.vue'
 import RevertConfirmDialog from './RevertConfirmDialog.vue'
+import SvnDiffViewer from './SvnDiffViewer.vue'
 
 const props = defineProps<{
   isActive: boolean
@@ -70,6 +71,11 @@ const showRevertDialog = ref(false)
 const revertDialogRepoUrl = ref<string>('')
 const revertDialogFiles = ref<Array<{ status: string; path: string }>>([])
 const pendingRevertRepoUrl = ref<string>('')
+
+// SVN Diff Viewer states
+const showDiffViewer = ref(false)
+const diffViewerRepoPath = ref<string>('')
+const diffViewerFilePath = ref<string>('')
 
 // Search related states
 const searchKeyword = ref<string>('')
@@ -185,7 +191,6 @@ const handleSelectionChange = (selection: SvnLogEntry[]): void => {
 
 const toggleAllSelections = (): void => {
   if (!tableRef.value) return
-  
   // Clear all selections
   tableRef.value.clearSelection()
   svnLogs.value.forEach((log) => {
@@ -336,6 +341,21 @@ const handleConfirmRevert = async (
     svnLogLoading.value = false
     pendingRevertRepoUrl.value = ''
   }
+}
+
+const handleViewDiff = (file: { status: string; path: string }): void => {
+  diffViewerRepoPath.value = revertDialogRepoUrl.value
+  diffViewerFilePath.value = file.path
+  showDiffViewer.value = true
+}
+
+const handleCloseDiffViewer = (): void => {
+  showDiffViewer.value = false
+  // Reset paths to ensure clean state for next open
+  setTimeout(() => {
+    diffViewerRepoPath.value = ''
+    diffViewerFilePath.value = ''
+  }, 300)
 }
 
 const handleCancelRevert = (): void => {
@@ -595,6 +615,15 @@ const performMerge = async (): Promise<void> => {
     :files="revertDialogFiles"
     @confirm="handleConfirmRevert"
     @cancel="handleCancelRevert"
+    @view-diff="handleViewDiff"
+  />
+
+  <!-- SVN Diff Viewer -->
+  <SvnDiffViewer
+    :visible="showDiffViewer"
+    :repo-path="diffViewerRepoPath"
+    :file-path="diffViewerFilePath"
+    @close="handleCloseDiffViewer"
   />
 </template>
 

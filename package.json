@@ -25,7 +25,8 @@
     "@electron-toolkit/utils": "^4.0.0",
     "@headlessui/vue": "^1.7.23",
     "element-plus": "^2.13.2",
-    "lucide-vue-next": "^0.575.0"
+    "lucide-vue-next": "^0.575.0",
+    "monaco-editor": "^0.52.2"
   },
   "devDependencies": {
     "@electron-toolkit/eslint-config-prettier": "3.0.0",
@@ -43,6 +44,7 @@
     "tailwindcss": "^4.1.0",
     "typescript": "^5.9.3",
     "vite": "^7.2.6",
+    "vite-plugin-monaco-editor": "^1.1.0",
     "vue": "^3.5.25",
     "vue-eslint-parser": "^10.2.0",
     "vue-tsc": "^3.1.6"

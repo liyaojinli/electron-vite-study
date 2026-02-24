@@ -16,6 +16,15 @@ export default defineConfig({
         '@renderer': resolve('src/renderer/src')
       }
     },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            monaco: ['monaco-editor']
+          }
+        }
+      }
+    },
     plugins: [vue(), tailwindcss()]
   }
 })

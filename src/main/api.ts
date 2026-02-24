@@ -259,6 +259,161 @@ export const apiHandlers = {
     }
   },
 
+  getSvnDiff: async (
+    repoPath: string,
+    filePath: string
+  ): Promise<{ success: boolean; diff: string; message: string }> => {
+    try {
+      const path = require('path')
+      // Convert to relative path if absolute
+      const relativePath = path.isAbsolute(filePath) ? path.relative(repoPath, filePath) : filePath
+      const cmd = `cd "${repoPath}" && svn diff "${relativePath}"`
+      console.log('[getSvnDiff] Executing:', cmd)
+      const output = execSync(cmd, { encoding: 'utf-8' })
+
+      return {
+       success: true,
+        diff: output,
+        message: '获取差异成功'
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : '获取差异失败'
+      console.error('[getSvnDiff] Error:', errorMsg)
+      return {
+        success: false,
+        diff: '',
+        message: `获取差异失败: ${errorMsg}`
+      }
+    }
+  },
+
+  getSvnFileContent: async (
+    repoPath: string,
+    filePath: string,
+    revision?: string
+  ): Promise<{ success: boolean; content: string; message: string }> => {
+    try {
+      let cmd: string
+      if (revision) {
+        // Get file content from specific revision
+        const path = require('path')
+        // Convert to relative path if absolute
+        const relativePath = path.isAbsolute(filePath) ? path.relative(repoPath, filePath) : filePath
+        cmd = `cd "${repoPath}" && svn cat -r ${revision} "${relativePath}"`
+      } else {
+        // Get local file content
+        const path = require('path')
+        const fs = require('fs')
+        // Check if filePath is already absolute, if not, join with repoPath
+        const fullPath = path.isAbsolute(filePath) ? filePath : path.join(repoPath, filePath)
+        const content = fs.readFileSync(fullPath, 'utf-8')
+        return {
+          success: true,
+          content,
+          message: '读取本地文件成功'
+        }
+      }
+
+      console.log('[getSvnFileContent] Executing:', cmd)
+      const output = execSync(cmd, { encoding: 'utf-8' })
+
+      return {
+        success: true,
+        content: output,
+        message: '获取文件内容成功'
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : '获取文件内容失败'
+      console.error('[getSvnFileContent] Error:', errorMsg)
+      return {
+        success: false,
+        content: '',
+        message: `获取文件内容失败: ${errorMsg}`
+      }
+    }
+  },
+
+  acceptSvnTheirs: async (
+    repoPath: string,
+    filePath: string
+  ): Promise<{ success: boolean; message: string }> => {
+    try {
+      const path = require('path')
+      // Check if filePath is absolute
+      const absolutePath = path.isAbsolute(filePath) ? filePath : path.join(repoPath, filePath)
+      // Convert to relative path for svn command
+      const relativePath = path.isAbsolute(filePath) ? path.relative(repoPath, filePath) : filePath
+      const cmd = `cd "${repoPath}" && svn cat "${relativePath}" > "${absolutePath}"`
+      console.log('[acceptSvnTheirs] Executing:', cmd)
+      execSync(cmd, { encoding: 'utf-8' })
+
+      return {
+        success: true,
+        message: '已接受服务端版本'
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : '接受服务端版本失败'
+      console.error('[acceptSvnTheirs] Error:', errorMsg)
+      return {
+        success: false,
+        message: `接受服务端版本失败: ${errorMsg}`
+      }
+    }
+  },
+
+  acceptSvnMine: async (
+    repoPath: string,
+    filePath: string
+  ): Promise<{ success: boolean; message: string }> => {
+    try {
+      const path = require('path')
+      // Convert to relative path if absolute
+      const relativePath = path.isAbsolute(filePath) ? path.relative(repoPath, filePath) : filePath
+      // Mark the conflict as resolved, keeping local version
+      const cmd = `cd "${repoPath}" && svn resolve --accept mine-full "${relativePath}"`
+      console.log('[acceptSvnMine] Executing:', cmd)
+      execSync(cmd, { encoding: 'utf-8' })
+
+      return {
+        success: true,
+        message: '已保留本地版本'
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : '保留本地版本失败'
+      console.error('[acceptSvnMine] Error:', errorMsg)
+      return {
+        success: false,
+        message: `保留本地版本失败: ${errorMsg}`
+      }
+    }
+  },
+
+  saveSvnFile: async (
+    repoPath: string,
+    filePath: string,
+    content: string
+  ): Promise<{ success: boolean; message: string }> => {
+    try {
+      const path = require('path')
+      const fs = require('fs')
+      // Check if filePath is already absolute, if not, join with repoPath
+      const fullPath = path.isAbsolute(filePath) ? filePath : path.join(repoPath, filePath)
+      fs.writeFileSync(fullPath, content, 'utf-8')
+
+      return {
+        success: true,
+        message: '文件保存成功'
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : '文件保存失败'
+      console.error('[saveSvnFile] Error:', errorMsg)
+      return {
+        success: false,
+        message: `文件保存失败: ${errorMsg}`
+      }
+    }
+  },
+
   getSvnChangedFiles: async (
     repoPath: string,
     revisions: number[]

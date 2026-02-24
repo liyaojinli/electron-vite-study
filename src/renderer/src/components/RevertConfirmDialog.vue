@@ -23,6 +23,7 @@ const props = withDefaults(
 const emit = defineEmits<{
   confirm: [selectedFiles: FileItem[]]
   cancel: []
+  viewDiff: [file: FileItem]
 }>()
 
 const selectedFileKeys = ref<Set<string>>(new Set())
@@ -133,6 +134,12 @@ const handleConfirm = (): void => {
 const handleCancel = (): void => {
   emit('cancel')
 }
+
+const handleViewDiff = (file: FileItem, event: MouseEvent): void => {
+  // Prevent checkbox toggle when clicking on file name
+  event.stopPropagation()
+  emit('viewDiff', file)
+}
 </script>
 
 <template>
@@ -196,14 +203,20 @@ const handleCancel = (): void => {
                   :key="`${status}-${index}`"
                   class="file-item"
                   :class="{ 'is-selected': isFileSelected(file) }"
+                  @click="toggleFileSelection(file)"
                 >
                   <input
                     type="checkbox"
                     class="file-checkbox"
                     :checked="isFileSelected(file)"
-                    @change="toggleFileSelection(file)"
+                    @change.stop="toggleFileSelection(file)"
                   />
-                  <span class="file-path" :title="file.path">{{ getRelativePath(file.path) }}</span>
+                  <span
+                    class="file-path"
+                    :title="file.path + ' (点击查看差异)'"
+                    @click="handleViewDiff(file, $event)"
+                    >{{ getRelativePath(file.path) }}</span
+                  >
                 </div>
               </div>
             </div>
@@ -485,6 +498,13 @@ const handleCancel = (): void => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: pointer;
+  transition: color 80ms ease;
+}
+
+.file-path:hover {
+  color: var(--color-primary);
+  text-decoration: underline;
 }
 
 .no-files-box {
