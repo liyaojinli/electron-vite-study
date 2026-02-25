@@ -287,6 +287,37 @@ export const apiHandlers = {
     }
   },
 
+  // Get diff between two revisions for a specific file
+  getSvnRevisionDiff: async (
+    repoPath: string,
+    filePath: string,
+    baseRevision: number,
+    targetRevision: number
+  ): Promise<{ success: boolean; diff: string; message: string }> => {
+    try {
+      const path = require('path')
+      // Convert to relative path if absolute
+      const relativePath = path.isAbsolute(filePath) ? path.relative(repoPath, filePath) : filePath
+      const cmd = `cd "${repoPath}" && svn diff -r${baseRevision}:${targetRevision} "${relativePath}"`
+      console.log('[getSvnRevisionDiff] Executing:', cmd)
+      const output = execSync(cmd, { encoding: 'utf-8' })
+
+      return {
+        success: true,
+        diff: output,
+        message: '获取版本差异成功'
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : '获取版本差异失败'
+      console.error('[getSvnRevisionDiff] Error:', errorMsg)
+      return {
+        success: false,
+        diff: '',
+        message: `获取版本差异失败: ${errorMsg}`
+      }
+    }
+  },
+
   getSvnFileContent: async (
     repoPath: string,
     filePath: string,
@@ -299,7 +330,17 @@ export const apiHandlers = {
         const path = require('path')
         // Convert to relative path if absolute
         const relativePath = path.isAbsolute(filePath) ? path.relative(repoPath, filePath) : filePath
-        cmd = `cd "${repoPath}" && svn cat -r ${revision} "${relativePath}"`
+        
+        // Get the base URL of the working copy
+        const infoCmd = `cd "${repoPath}" && svn info --show-item url`
+        const wcUrl = execSync(infoCmd, { encoding: 'utf-8' }).trim()
+        
+        // Build the full file URL - ensure no double slashes
+        const cleanRelativePath = relativePath.replace(/\\/g, '/').replace(/^\//, '')
+        const fileUrl = `${wcUrl}/${cleanRelativePath}`
+        
+        // For deleted files, we need to use peg revision with the URL
+        cmd = `svn cat "${fileUrl}"@${revision}`
       } else {
         // Get local file content
         const path = require('path')
@@ -314,7 +355,6 @@ export const apiHandlers = {
         }
       }
 
-      console.log('[getSvnFileContent] Executing:', cmd)
       const output = execSync(cmd, { encoding: 'utf-8' })
 
       return {
@@ -322,13 +362,12 @@ export const apiHandlers = {
         content: output,
         message: '获取文件内容成功'
       }
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : '获取文件内容失败'
-      console.error('[getSvnFileContent] Error:', errorMsg)
+    } catch {
+      // Silently return empty content for deleted/non-existent files
       return {
         success: false,
         content: '',
-        message: `获取文件内容失败: ${errorMsg}`
+        message: '文件不存在或已删除'
       }
     }
   },
@@ -420,6 +459,10 @@ export const apiHandlers = {
   ): Promise<Array<{ revision: number; files: Array<{ status: string; path: string }> }>> => {
     if (revisions.length === 0) return []
     try {
+      // Get the SVN URL of the working copy to properly compute relative paths
+      const infoCmd = `cd "${repoPath}" && svn info --show-item url`
+      const wcUrl = execSync(infoCmd, { encoding: 'utf-8' }).trim()
+      
       const result: Array<{ revision: number; files: Array<{ status: string; path: string }> }> =
         []
       for (const revision of revisions) {
@@ -428,13 +471,16 @@ export const apiHandlers = {
         const lines = output.split('\n').filter((line) => line.trim())
         const files: Array<{ status: string; path: string }> = []
         for (const line of lines) {
-          // Format: "M   /path/to/file" or "A   /path/to/file", etc.
+          // Format: "M   /path/to/file" or "A   /path/to/file", or URL format
           const match = line.match(/^([A-Z])\s+(.+)$/)
           if (match) {
             const status = match[1]
-            const filePath = match[2]
-            // Remove the repo path prefix to show only relative path
-            const relativePath = filePath.replace(repoPath, '').replace(/^\//, '')
+            let filePath = match[2]
+            // Remove either local path or URL prefix to get relative path
+            let relativePath = filePath
+              .replace(repoPath, '')
+              .replace(wcUrl, '')
+              .replace(/^\//, '')
             files.push({
               status,
               path: relativePath

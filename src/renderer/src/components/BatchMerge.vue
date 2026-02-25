@@ -1,20 +1,11 @@
 <script setup lang="ts">
 import { onMounted, ref, computed, watch } from 'vue'
-import {
-  ChevronDown,
-  ChevronRight,
-  AlertCircle,
-  CheckCircle,
-  Play,
-  X,
-  Search,
-  RefreshCw,
-  RotateCcw
-} from 'lucide-vue-next'
+import { AlertCircle, CheckCircle, Play, X, Search, RefreshCw, RotateCcw } from 'lucide-vue-next'
 import type { RepositoryData } from '../../../shared/repository'
 import SvnLogDialog from './SvnLogDialog.vue'
 import RevertConfirmDialog from './RevertConfirmDialog.vue'
 import SvnDiffViewer from './SvnDiffViewer.vue'
+import SvnDiffViewerReadOnly from './SvnDiffViewerReadOnly.vue'
 
 const props = defineProps<{
   isActive: boolean
@@ -48,9 +39,12 @@ const svnLogs = ref<SvnLogEntry[]>([])
 const selectedSourceRepo = ref<string>('')
 const selectedTargetRepos = ref<Set<string>>(new Set())
 const mergeResults = ref<MergeResult[]>([])
+// 状态集合：哪些仓库可以提交 / 存在冲突
+const canCommitRepos = ref<Set<string>>(new Set())
+const conflictRepos = ref<Set<string>>(new Set())
 const isLoading = ref(false)
 const isLogLoading = ref(false)
-const expandedResults = ref<Set<number>>(new Set())
+// (removed expandedResults used by removed Merge Results panel)
 const affectedFiles = ref<AffectedFile[]>([])
 const isLoadingFiles = ref(false)
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -76,6 +70,13 @@ const pendingRevertRepoUrl = ref<string>('')
 const showDiffViewer = ref(false)
 const diffViewerRepoPath = ref<string>('')
 const diffViewerFilePath = ref<string>('')
+
+// SVN Diff Viewer ReadOnly states (for revision diff)
+const showDiffViewerReadOnly = ref(false)
+const diffViewerReadOnlyRepoPath = ref<string>('')
+const diffViewerReadOnlyFilePath = ref<string>('')
+const diffViewerReadOnlyBaseRevision = ref<number>(0)
+const diffViewerReadOnlyTargetRevision = ref<number>(0)
 
 // Search related states
 const searchKeyword = ref<string>('')
@@ -105,11 +106,12 @@ watch(
 )
 
 // Auto-load logs when source repo is selected (only initial load)
-watch(selectedSourceRepo, async (newValue, oldValue) => {
-  // Only auto-load on initial selection, not when searching
-  if (newValue && !oldValue) {
+
+// Auto-load logs whenever source repo changes
+watch(selectedSourceRepo, async (newValue) => {
+  if (newValue) {
     await loadLogs()
-  } else if (!newValue) {
+  } else {
     svnLogs.value = []
     affectedFiles.value = []
   }
@@ -251,13 +253,7 @@ const toggleTargetRepo = (repoUrl: string): void => {
   }
 }
 
-const toggleResultExpanded = (index: number): void => {
-  if (expandedResults.value.has(index)) {
-    expandedResults.value.delete(index)
-  } else {
-    expandedResults.value.add(index)
-  }
-}
+// (toggleResultExpanded removed — no merge results panel now)
 
 const performSvnUpdate = async (repoUrl: string): Promise<void> => {
   svnLogTitle.value = `更新仓库: ${repoUrl}`
@@ -309,6 +305,15 @@ const performSvnRevert = async (repoUrl: string): Promise<void> => {
   }
 }
 
+// 占位空函数：待实现提交与冲突处理逻辑
+const onCommitClick = (repoUrl: string): void => {
+  console.log('[onCommitClick] placeholder for', repoUrl)
+}
+
+const onConflictClick = (repoUrl: string): void => {
+  console.log('[onConflictClick] placeholder for', repoUrl)
+}
+
 const handleConfirmRevert = async (
   selectedFiles: Array<{ status: string; path: string }>
 ): Promise<void> => {
@@ -358,6 +363,41 @@ const handleCloseDiffViewer = (): void => {
   }, 300)
 }
 
+// Handle clicking on affected file to view revision diff
+const handleViewAffectedFileDiff = (
+  file: { status: string; path: string },
+  revision: number
+): void => {
+  // Don't allow viewing diff for directories
+  if (file.path.endsWith('/')) return
+
+  diffViewerReadOnlyRepoPath.value = sourceRepo.value?.url || ''
+  diffViewerReadOnlyFilePath.value = file.path
+  diffViewerReadOnlyBaseRevision.value = revision - 1
+  diffViewerReadOnlyTargetRevision.value = revision
+  showDiffViewerReadOnly.value = true
+}
+
+const handleCloseDiffViewerReadOnly = (): void => {
+  showDiffViewerReadOnly.value = false
+  setTimeout(() => {
+    diffViewerReadOnlyRepoPath.value = ''
+    diffViewerReadOnlyFilePath.value = ''
+    diffViewerReadOnlyBaseRevision.value = 0
+    diffViewerReadOnlyTargetRevision.value = 0
+  }, 300)
+}
+
+// Check if affected file can show diff (not a directory)
+// Files have extensions (contain .), directories don't
+const canShowAffectedFileDiff = (file: { status: string; path: string }): boolean => {
+  // 以 / 结尾的是目录
+  if (file.path.endsWith('/')) return false
+  // 获取文件名，检查是否包含扩展名
+  const fileName = file.path.split('/').pop() || ''
+  return fileName.includes('.')
+}
+
 const handleCancelRevert = (): void => {
   showRevertDialog.value = false
   pendingRevertRepoUrl.value = ''
@@ -368,6 +408,9 @@ const performMerge = async (): Promise<void> => {
 
   isLoading.value = true
   mergeResults.value = []
+  // reset status sets
+  canCommitRepos.value.clear()
+  conflictRepos.value.clear()
 
   try {
     const selectedLog = svnLogs.value.filter((l) => l.selected)[0]
@@ -378,6 +421,21 @@ const performMerge = async (): Promise<void> => {
       selectedRevisions.value,
       selectedLog?.message || ''
     )
+
+    // 根据 mergeResults 更新按钮状态：成功 -> 可提交；包含 conflict 字样 -> 有冲突
+    mergeResults.value.forEach((res) => {
+      const url = res.targetRepoUrl || res.targetRepoName
+      if (res.success) {
+        canCommitRepos.value.add(url)
+        conflictRepos.value.delete(url)
+      } else {
+        const msg = (res.message || '').toLowerCase()
+        if (msg.includes('conflict') || msg.includes('冲突')) {
+          conflictRepos.value.add(url)
+          canCommitRepos.value.delete(url)
+        }
+      }
+    })
   } catch (error) {
     console.error('Merge failed:', error)
   } finally {
@@ -458,12 +516,21 @@ const performMerge = async (): Promise<void> => {
                     </span>
                   </template>
                 </el-table-column>
-                <el-table-column
-                  prop="message"
-                  label="提交信息"
-                  min-width="200"
-                  show-overflow-tooltip
-                />
+                <el-table-column prop="message" label="提交信息" min-width="200">
+                  <template #default="{ row }">
+                    <el-tooltip
+                      :content="row.message"
+                      placement="right"
+                      :show-after="300"
+                      :disabled="!row.message"
+                      popper-class="commit-message-tooltip"
+                      effect="light"
+                      :show-arrow="false"
+                    >
+                      <span class="message-cell">{{ row.message }}</span>
+                    </el-tooltip>
+                  </template>
+                </el-table-column>
                 <el-table-column prop="author" label="提交人" width="100" show-overflow-tooltip />
                 <el-table-column prop="date" label="提交时间" width="160">
                   <template #default="{ row }">
@@ -494,7 +561,15 @@ const performMerge = async (): Promise<void> => {
                     v-for="file in revisionGroup.files"
                     :key="file.path"
                     class="file-line"
-                    :class="`status-${file.status}`"
+                    :class="[
+                      `status-${file.status}`,
+                      { 'can-view-diff': canShowAffectedFileDiff(file) },
+                      { 'is-directory': !canShowAffectedFileDiff(file) }
+                    ]"
+                    @click="
+                      canShowAffectedFileDiff(file) &&
+                      handleViewAffectedFileDiff(file, revisionGroup.revision)
+                    "
                   >
                     <span class="file-status">{{ file.status }}</span>
                     <span class="file-path">{{ file.path }}</span>
@@ -508,7 +583,23 @@ const performMerge = async (): Promise<void> => {
 
       <!-- Target Repositories Selection -->
       <div v-if="selectedSourceRepo" class="merge-section">
-        <h3 class="section-subtitle">步骤 3: 选择目标仓库</h3>
+        <h3 class="section-subtitle">
+          <span>步骤 3: 选择目标仓库</span>
+          <div class="subtitle-actions">
+            <div class="panel-action-group">
+              <button
+                type="button"
+                class="update-btn"
+                :title="isLoading ? '合并中...' : '执行合并'"
+                :disabled="!canMerge || isLoading"
+                @click="performMerge"
+              >
+                <Play :size="16" :class="{ 'is-spinning': isLoading }" />
+              </button>
+              <div class="panel-action-label">{{ isLoading ? '合并中...' : '合并' }}</div>
+            </div>
+          </div>
+        </h3>
         <div class="target-repos-grid">
           <div
             v-for="repo in localRepositories.filter((r) => r.url !== selectedSourceRepo)"
@@ -526,23 +617,55 @@ const performMerge = async (): Promise<void> => {
                 <span class="repo-alias">{{ repo.alias }}</span>
               </div>
               <div class="panel-right">
-                <button
-                  type="button"
-                  class="update-btn"
-                  :title="`更新 ${repo.alias}`"
-                  :disabled="updatingRepos.has(repo.url)"
-                  @click="performSvnUpdate(repo.url)"
-                >
-                  <RefreshCw :size="16" :class="{ 'is-spinning': updatingRepos.has(repo.url) }" />
-                </button>
-                <button
-                  type="button"
-                  class="revert-btn"
-                  :title="`恢复 ${repo.alias}`"
-                  @click="performSvnRevert(repo.url)"
-                >
-                  <RotateCcw :size="16" />
-                </button>
+                <div class="panel-action-group">
+                  <button
+                    type="button"
+                    class="update-btn"
+                    :title="`更新 ${repo.alias}`"
+                    :disabled="updatingRepos.has(repo.url)"
+                    @click="performSvnUpdate(repo.url)"
+                  >
+                    <RefreshCw :size="16" :class="{ 'is-spinning': updatingRepos.has(repo.url) }" />
+                  </button>
+                  <div class="panel-action-label">更新</div>
+                </div>
+                <div class="panel-action-group">
+                  <button
+                    type="button"
+                    class="revert-btn"
+                    :title="`恢复 ${repo.alias}`"
+                    @click="performSvnRevert(repo.url)"
+                  >
+                    <RotateCcw :size="16" />
+                  </button>
+                  <div class="panel-action-label">还原</div>
+                </div>
+                <div class="panel-action-group">
+                  <button
+                    type="button"
+                    class="update-btn"
+                    :title="`提交 ${repo.alias}`"
+                    :class="{ 'commit-active': canCommitRepos.has(repo.url) }"
+                    :disabled="!canCommitRepos.has(repo.url)"
+                    @click="onCommitClick(repo.url)"
+                  >
+                    <CheckCircle :size="16" />
+                  </button>
+                  <div class="panel-action-label">提交</div>
+                </div>
+                <div class="panel-action-group">
+                  <button
+                    type="button"
+                    class="revert-btn"
+                    :title="`检查冲突 ${repo.alias}`"
+                    :class="{ 'conflict-active': conflictRepos.has(repo.url) }"
+                    :disabled="!conflictRepos.has(repo.url)"
+                    @click="onConflictClick(repo.url)"
+                  >
+                    <AlertCircle :size="16" />
+                  </button>
+                  <div class="panel-action-label">冲突</div>
+                </div>
               </div>
             </div>
             <div class="panel-body">
@@ -552,49 +675,7 @@ const performMerge = async (): Promise<void> => {
         </div>
       </div>
 
-      <!-- Merge Action -->
-      <div v-if="selectedSourceRepo" class="merge-section merge-action">
-        <button
-          :disabled="!canMerge || isLoading"
-          class="app-button is-primary is-large"
-          @click="performMerge"
-        >
-          <Play :size="16" />
-          {{ isLoading ? '合并中...' : '执行合并' }}
-        </button>
-      </div>
-
-      <!-- Merge Results -->
-      <div v-if="mergeResults.length > 0" class="merge-section">
-        <h3 class="section-subtitle">合并结果</h3>
-        <div class="results-container">
-          <div
-            v-for="(result, index) in mergeResults"
-            :key="index"
-            class="result-item"
-            :class="{ 'is-success': result.success, 'is-error': !result.success }"
-          >
-            <button type="button" class="result-header" @click="toggleResultExpanded(index)">
-              <component :is="expandedResults.has(index) ? ChevronDown : ChevronRight" :size="16" />
-              <component
-                :is="result.success ? CheckCircle : AlertCircle"
-                :size="16"
-                :class="{ 'is-success': result.success, 'is-error': !result.success }"
-              />
-              <span class="result-title">{{ result.targetRepoName }}</span>
-              <span class="result-status">
-                {{ result.success ? '成功' : '失败' }}
-              </span>
-            </button>
-            <div v-if="expandedResults.has(index)" class="result-details">
-              <div class="result-message">{{ result.message }}</div>
-              <div v-if="result.output" class="result-output">
-                <pre>{{ result.output }}</pre>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
+      <!-- (合并结果面板已移除) -->
     </div>
   </section>
 
@@ -624,6 +705,16 @@ const performMerge = async (): Promise<void> => {
     :repo-path="diffViewerRepoPath"
     :file-path="diffViewerFilePath"
     @close="handleCloseDiffViewer"
+  />
+
+  <!-- SVN Diff Viewer ReadOnly (for revision diff) -->
+  <SvnDiffViewerReadOnly
+    :visible="showDiffViewerReadOnly"
+    :repo-path="diffViewerReadOnlyRepoPath"
+    :file-path="diffViewerReadOnlyFilePath"
+    :base-revision="diffViewerReadOnlyBaseRevision"
+    :target-revision="diffViewerReadOnlyTargetRevision"
+    @close="handleCloseDiffViewerReadOnly"
   />
 </template>
 
@@ -673,7 +764,18 @@ const performMerge = async (): Promise<void> => {
     var(--color-background-secondary) 0%,
     var(--color-background-hover) 100%
   );
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
 }
+
+.subtitle-actions {
+  display: flex;
+  align-items: center;
+}
+
+/* 使用现有的 .update-btn / .panel-action-label 样式来匹配更新/还原按钮 */
 
 .merge-section > div:not(.section-subtitle):nth-of-type(n + 2) {
   padding: 16px;
@@ -852,6 +954,13 @@ const performMerge = async (): Promise<void> => {
   position: relative;
 }
 
+.message-cell {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .table-loading-overlay {
   position: absolute;
   top: 0;
@@ -998,6 +1107,24 @@ const performMerge = async (): Promise<void> => {
   color: #1d4ed8;
 }
 
+/* Clickable file diff */
+.file-line.can-view-diff {
+  cursor: pointer;
+  border-radius: 2px;
+  padding: 2px 4px;
+  margin: 0 -4px;
+}
+
+.file-line.can-view-diff:hover {
+  background: var(--bg-hover, rgba(0, 0, 0, 0.05));
+}
+
+/* Directory style - not clickable */
+.file-line.is-directory {
+  cursor: default;
+  opacity: 0.7;
+}
+
 .checkbox-label {
   display: flex;
   align-items: center;
@@ -1100,6 +1227,11 @@ const performMerge = async (): Promise<void> => {
   cursor: not-allowed;
 }
 
+.revert-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .update-btn svg {
   width: 16px;
   height: 16px;
@@ -1120,9 +1252,36 @@ const performMerge = async (): Promise<void> => {
 
 .panel-right {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: center;
-  gap: 8px;
+  gap: 16px;
+}
+
+.panel-action-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.panel-action-label {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  margin-top: 2px;
+  user-select: none;
+}
+
+/* 提交/冲突 激活样式 */
+.update-btn.commit-active {
+  background: var(--color-success);
+  color: #ffffff;
+  border-color: var(--color-success);
+}
+
+.revert-btn.conflict-active {
+  background: #facc15; /* 黄色 */
+  color: #1f2937;
+  border-color: #f59e0b;
 }
 
 .revert-btn {
@@ -1268,5 +1427,19 @@ const performMerge = async (): Promise<void> => {
 
 .is-error {
   color: var(--color-error);
+}
+</style>
+
+<style>
+/* Global styles for tooltip - not scoped */
+.commit-message-tooltip.el-popper.is-light {
+  max-width: 400px !important;
+  background-color: var(--color-background-secondary) !important;
+  color: var(--color-text-primary) !important;
+  border: 1px solid var(--color-border) !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15) !important;
+  white-space: pre-wrap !important;
+  word-break: break-word !important;
+  line-height: 1.5 !important;
 }
 </style>

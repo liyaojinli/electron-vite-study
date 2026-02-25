@@ -760,20 +760,60 @@ body {
 .el-checkbox {
   --el-checkbox-bg-color: var(--el-bg-color);
   --el-checkbox-input-border-color: var(--el-border-color);
-  --el-checkbox-checked-bg-color: var(--el-color-primary);
-  --el-checkbox-checked-border-color: var(--el-color-primary);
+  --el-checkbox-checked-bg-color: #409eff;
+  --el-checkbox-checked-border-color: #409eff;
+  --el-checkbox-checked-icon-color: #ffffff;
 }
 
 .el-checkbox__inner {
-  width: 14px !important;
-  height: 14px !important;
+  width: 16px !important;
+  height: 16px !important;
+  border-width: 2px !important;
+  border-color: #dcdfe6 !important;
+  background-color: #ffffff !important;
 }
 
 .el-checkbox__inner::after {
-  height: 6px !important;
+  height: 8px !important;
   left: 4px !important;
-  top: 1px !important;
-  width: 3px !important;
+  top: 0px !important;
+  width: 4px !important;
+  border-width: 2px !important;
+  border-color: #ffffff !important;
+}
+
+/* Checked state - blue background with white checkmark */
+.el-checkbox.is-checked .el-checkbox__inner,
+.el-table .el-checkbox.is-checked .el-checkbox__inner {
+  background-color: #409eff !important;
+  border-color: #409eff !important;
+}
+
+.el-checkbox.is-checked .el-checkbox__inner::after,
+.el-table .el-checkbox.is-checked .el-checkbox__inner::after {
+  border-color: #ffffff !important;
+  transform: rotate(45deg) scaleY(1) !important;
+}
+
+/* Indeterminate state (for select all) */
+.el-checkbox.is-indeterminate .el-checkbox__inner {
+  background-color: #409eff !important;
+  border-color: #409eff !important;
+}
+
+.el-checkbox.is-indeterminate .el-checkbox__inner::before {
+  background-color: #ffffff !important;
+}
+
+/* Dark mode adjustments */
+[data-theme='dark'] .el-checkbox__inner {
+  border-color: #4c4d4f !important;
+  background-color: #1e1e1e !important;
+}
+
+[data-theme='dark'] .el-checkbox.is-checked .el-checkbox__inner {
+  background-color: #409eff !important;
+  border-color: #409eff !important;
 }
 
 /* Hide select all checkbox in table header */

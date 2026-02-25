@@ -135,9 +135,41 @@ const handleCancel = (): void => {
   emit('cancel')
 }
 
+// Check if path is a directory (ends with / or has no extension)
+const isDirectory = (filePath: string): boolean => {
+  if (filePath.endsWith('/')) return true
+  const fileName = filePath.split('/').pop() || ''
+  return !fileName.includes('.')
+}
+
+// Check if file status is viewable (M: modified files only)
+const canViewDiff = (file: FileItem): boolean => {
+  // Directories cannot be viewed
+  if (isDirectory(file.path)) return false
+  // Only modified files can show meaningful diff
+  // A (added), D (deleted) need special handling in diff viewer
+  return ['M', 'A', 'D'].includes(file.status)
+}
+
+const getDiffTooltip = (file: FileItem): string => {
+  if (isDirectory(file.path)) {
+    return file.path + ' (目录不支持查看差异)'
+  }
+  if (!['M', 'A', 'D'].includes(file.status)) {
+    return file.path + ' (此状态不支持查看差异)'
+  }
+  return file.path + ' (点击查看差异)'
+}
+
 const handleViewDiff = (file: FileItem, event: MouseEvent): void => {
   // Prevent checkbox toggle when clicking on file name
   event.stopPropagation()
+  
+  // Check if can view diff
+  if (!canViewDiff(file)) {
+    return
+  }
+  
   emit('viewDiff', file)
 }
 </script>
@@ -213,7 +245,8 @@ const handleViewDiff = (file: FileItem, event: MouseEvent): void => {
                   />
                   <span
                     class="file-path"
-                    :title="file.path + ' (点击查看差异)'"
+                    :class="{ 'can-view-diff': canViewDiff(file) }"
+                    :title="getDiffTooltip(file)"
                     @click="handleViewDiff(file, $event)"
                     >{{ getRelativePath(file.path) }}</span
                   >
@@ -498,11 +531,15 @@ const handleViewDiff = (file: FileItem, event: MouseEvent): void => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  cursor: pointer;
+  cursor: default;
   transition: color 80ms ease;
 }
 
-.file-path:hover {
+.file-path.can-view-diff {
+  cursor: pointer;
+}
+
+.file-path.can-view-diff:hover {
   color: var(--color-primary);
   text-decoration: underline;
 }

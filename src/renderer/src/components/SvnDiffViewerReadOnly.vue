@@ -7,12 +7,16 @@ interface Props {
   visible?: boolean
   repoPath?: string
   filePath?: string
+  baseRevision?: number
+  targetRevision?: number
 }
 
 const props = withDefaults(defineProps<Props>(), {
   visible: false,
   repoPath: '',
-  filePath: ''
+  filePath: '',
+  baseRevision: 0,
+  targetRevision: 0
 })
 
 const emit = defineEmits<{
@@ -96,9 +100,9 @@ const initEditor = (
   originalModelInstance = monaco.editor.createModel(originalContent, language)
   modifiedModelInstance = monaco.editor.createModel(modifiedContent, language)
 
-  // Create diff editor with theme
+  // Create diff editor - fully read-only
   diffEditorInstance = monaco.editor.createDiffEditor(container, {
-    readOnly: false,
+    readOnly: true,
     enableSplitViewResizing: true,
     renderSideBySide: true,
     minimap: { enabled: false },
@@ -139,7 +143,7 @@ const cleanupThemeObserver = (): void => {
 }
 
 const loadDiff = async (): Promise<void> => {
-  if (!props.repoPath || !props.filePath) return
+  if (!props.repoPath || !props.filePath || !props.baseRevision || !props.targetRevision) return
 
   isLoading.value = true
   error.value = ''
@@ -147,28 +151,31 @@ const loadDiff = async (): Promise<void> => {
   editorKey.value++
 
   try {
-    // Try to fetch both local and remote content
-    // If one side doesn't exist (added/deleted file), use empty string
-    const [localResult, remoteResult] = await Promise.all([
-      api.getSvnFileContent(props.repoPath, props.filePath).catch(() => ({
-        success: false,
-        content: '',
-        message: '本地文件不存在'
-      })),
-      api.getSvnFileContent(props.repoPath, props.filePath, 'HEAD').catch(() => ({
-        success: false,
-        content: '',
-        message: '服务端文件不存在'
-      }))
+    // Fetch both revision contents
+    const [baseResult, targetResult] = await Promise.all([
+      api
+        .getSvnFileContent(props.repoPath, props.filePath, String(props.baseRevision))
+        .catch(() => ({
+          success: false,
+          content: '',
+          message: '基准版本文件不存在'
+        })),
+      api
+        .getSvnFileContent(props.repoPath, props.filePath, String(props.targetRevision))
+        .catch(() => ({
+          success: false,
+          content: '',
+          message: '目标版本文件不存在'
+        }))
     ])
 
-    // Use empty string if file doesn't exist on either side
-    const localContent = localResult.success ? localResult.content : ''
-    const remoteContent = remoteResult.success ? remoteResult.content : ''
+    // Use empty string if file doesn't exist in that revision
+    const baseContent = baseResult.success ? baseResult.content : ''
+    const targetContent = targetResult.success ? targetResult.content : ''
 
     // If both sides failed, show error
-    if (!localResult.success && !remoteResult.success) {
-      throw new Error('无法获取本地和服务端文件内容')
+    if (!baseResult.success && !targetResult.success) {
+      throw new Error('无法获取两个版本的文件内容')
     }
 
     const language = getLanguageFromPath(props.filePath)
@@ -179,64 +186,15 @@ const loadDiff = async (): Promise<void> => {
     // Wait for DOM to render
     await new Promise((resolve) => setTimeout(resolve, 50))
 
-    const container = document.getElementById(`diff-editor-${editorKey.value}`)
+    const container = document.getElementById(`diff-editor-readonly-${editorKey.value}`)
     if (container) {
-      initEditor(container, remoteContent, localContent, language)
+      initEditor(container, baseContent, targetContent, language)
       setupThemeObserver()
     }
   } catch (err) {
-    error.value = err instanceof Error ? err.message : '加载文件失败'
+    error.value = err instanceof Error ? err.message : '加载差异失败'
   } finally {
     isLoading.value = false
-  }
-}
-
-const acceptTheirs = async (): Promise<void> => {
-  if (!props.repoPath || !props.filePath) return
-  try {
-    const result = await api.acceptSvnTheirs(props.repoPath, props.filePath)
-    if (result.success) {
-      alert('已接受服务端版本')
-      emit('close')
-    } else {
-      alert(result.message)
-    }
-  } catch (err) {
-    alert('操作失败：' + (err instanceof Error ? err.message : '未知错误'))
-  }
-}
-
-const acceptMine = async (): Promise<void> => {
-  if (!props.repoPath || !props.filePath) return
-  try {
-    const result = await api.acceptSvnMine(props.repoPath, props.filePath)
-    if (result.success) {
-      alert('已保留本地版本')
-      emit('close')
-    } else {
-      alert(result.message)
-    }
-  } catch (err) {
-    alert('操作失败：' + (err instanceof Error ? err.message : '未知错误'))
-  }
-}
-
-const saveMerged = async (): Promise<void> => {
-  if (!props.repoPath || !props.filePath || !modifiedModelInstance) {
-    alert('无法获取修改后的内容')
-    return
-  }
-  try {
-    const content = modifiedModelInstance.getValue()
-    const result = await api.saveSvnFile(props.repoPath, props.filePath, content)
-    if (result.success) {
-      alert('保存成功')
-      emit('close')
-    } else {
-      alert(result.message)
-    }
-  } catch (err) {
-    alert('保存失败：' + (err instanceof Error ? err.message : '未知错误'))
   }
 }
 
@@ -271,7 +229,7 @@ onBeforeUnmount(() => {
     <div class="diff-viewer-container">
       <div class="diff-header">
         <div class="diff-title">
-          <span class="title-text">文件差异对比</span>
+          <span class="title-text">版本差异查看</span>
           <span class="file-path">{{ filePath }}</span>
         </div>
         <button class="close-btn" @click="handleClose">
@@ -281,20 +239,9 @@ onBeforeUnmount(() => {
 
       <div class="diff-toolbar">
         <div class="toolbar-left">
-          <span class="label">服务端版本 (HEAD)</span>
+          <span class="label">提交前 (r{{ baseRevision }})</span>
           <span class="separator">vs</span>
-          <span class="label">本地版本 (Working Copy)</span>
-        </div>
-        <div class="toolbar-right">
-          <button class="btn btn-secondary" :disabled="isLoading" @click="acceptTheirs">
-            接受服务端版本
-          </button>
-          <button class="btn btn-secondary" :disabled="isLoading" @click="acceptMine">
-            保留本地版本
-          </button>
-          <button class="btn btn-primary" :disabled="isLoading" @click="saveMerged">
-            保存合并结果
-          </button>
+          <span class="label">提交后 (r{{ targetRevision }})</span>
         </div>
       </div>
 
@@ -305,7 +252,7 @@ onBeforeUnmount(() => {
         <div v-if="error" class="error-message">{{ error }}</div>
         <div
           v-if="showEditor"
-          :id="`diff-editor-${editorKey}`"
+          :id="`diff-editor-readonly-${editorKey}`"
           :key="editorKey"
           class="editor-container"
         ></div>
@@ -325,133 +272,106 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 10000;
+  z-index: 1000;
 }
 
 .diff-viewer-container {
-  background: var(--color-background-primary);
+  width: 95vw;
+  height: 90vh;
+  background: var(--bg-primary, #ffffff);
   border-radius: 8px;
-  border: 1px solid var(--color-border);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
-  width: 95%;
-  height: 90%;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
 }
 
 .diff-header {
-  padding: 16px;
-  border-bottom: 1px solid var(--color-border);
   display: flex;
   align-items: center;
   justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-color, #e0e0e0);
+  background: var(--bg-secondary, #f5f5f5);
+  flex-shrink: 0;
 }
 
 .diff-title {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  align-items: center;
+  gap: 12px;
 }
 
 .title-text {
+  font-weight: 600;
   font-size: 16px;
-  font-weight: 500;
-  color: var(--color-text-primary);
+  color: var(--text-primary, #333);
 }
 
 .file-path {
-  font-size: 12px;
-  color: var(--color-text-secondary);
+  font-size: 13px;
+  color: var(--text-secondary, #666);
   font-family: monospace;
 }
 
 .close-btn {
-  background: none;
-  border: none;
-  cursor: pointer;
-  color: var(--color-text-secondary);
-  padding: 4px;
   display: flex;
   align-items: center;
   justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: transparent;
   border-radius: 4px;
-  transition: all 120ms ease;
+  cursor: pointer;
+  color: var(--text-secondary, #666);
+  transition: all 0.2s;
 }
 
 .close-btn:hover {
-  background: var(--color-background-hover);
-  color: var(--color-text-primary);
+  background: var(--bg-hover, rgba(0, 0, 0, 0.1));
+  color: var(--text-primary, #333);
 }
 
 .diff-toolbar {
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--color-border);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: var(--color-background-secondary);
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border-color, #e0e0e0);
+  background: var(--bg-secondary, #f5f5f5);
+  flex-shrink: 0;
 }
 
 .toolbar-left {
   display: flex;
   align-items: center;
-  gap: 12px;
-  font-size: 13px;
-}
-
-.label {
-  color: var(--color-text-primary);
-  font-weight: 500;
-}
-
-.separator {
-  color: var(--color-text-secondary);
-}
-
-.toolbar-right {
-  display: flex;
-  align-items: center;
   gap: 8px;
 }
 
-.btn {
-  padding: 6px 14px;
-  border-radius: 4px;
-  border: 1px solid var(--color-border);
+.toolbar-left .label {
   font-size: 13px;
-  cursor: pointer;
-  transition: all 120ms ease;
+  color: var(--text-secondary, #666);
+  font-family: monospace;
+  background: var(--bg-tertiary, #e8e8e8);
+  padding: 2px 8px;
+  border-radius: 4px;
 }
 
-.btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.btn-primary {
-  background: var(--color-primary);
-  color: white;
-  border-color: var(--color-primary);
-}
-
-.btn-primary:hover:not(:disabled) {
-  background: var(--color-primary-hover);
-  border-color: var(--color-primary-hover);
-}
-
-.btn-secondary {
-  background: var(--color-background-primary);
-  color: var(--color-text-primary);
-}
-
-.btn-secondary:hover:not(:disabled) {
-  background: var(--color-background-hover);
+.toolbar-left .separator {
+  color: var(--text-tertiary, #999);
+  font-weight: bold;
 }
 
 .editor-wrapper {
   flex: 1;
   position: relative;
-  overflow: hidden;
+  min-height: 0;
+}
+
+.editor-container {
+  width: 100%;
+  height: 100%;
 }
 
 .loading-overlay {
@@ -460,33 +380,29 @@ onBeforeUnmount(() => {
   left: 0;
   right: 0;
   bottom: 0;
-  background: var(--color-background-primary);
   display: flex;
   align-items: center;
   justify-content: center;
+  background: var(--bg-primary, #ffffff);
   z-index: 10;
 }
 
 .loading-spinner {
+  color: var(--text-secondary, #666);
   font-size: 14px;
-  color: var(--color-text-secondary);
 }
 
 .error-message {
   position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  background: var(--color-error-transparent);
-  color: var(--color-error);
-  padding: 16px 24px;
-  border-radius: 4px;
-  font-size: 13px;
-  z-index: 10;
-}
-
-.editor-container {
-  width: 100%;
-  height: 100%;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #e53935;
+  font-size: 14px;
+  background: var(--bg-primary, #ffffff);
 }
 </style>
