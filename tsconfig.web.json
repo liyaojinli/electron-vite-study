@@ -9,6 +9,7 @@
   ],
   "compilerOptions": {
     "composite": true,
+    "sourceMap": true,
     "baseUrl": ".",
     "paths": {
       "@renderer/*": [

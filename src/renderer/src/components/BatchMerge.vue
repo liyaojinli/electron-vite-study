@@ -1,11 +1,47 @@
 <script setup lang="ts">
+// 合并进度面板数据
+const mergeDialogPanels = computed(() => {
+  return mergeResults.value.map((res) => {
+    let files: string[] = []
+    if (res.output) {
+      files = res.output
+        .split(/\r?\n/)
+        .filter((ln) => ln && ln.trim() && /\.(\w+)$/.test(ln))
+        .map((ln) => ln.trim())
+    }
+    return {
+      targetRepoName: res.targetRepoName,
+      success: res.success,
+      files
+    }
+  })
+})
 import { onMounted, ref, computed, watch } from 'vue'
-import { AlertCircle, CheckCircle, Play, X, Search, RefreshCw, RotateCcw } from 'lucide-vue-next'
+import {
+  AlertCircle,
+  CheckCircle,
+  Play,
+  X,
+  Search,
+  RefreshCw,
+  RotateCcw,
+  LucideWandSparkles,
+  LucideFileWarning,
+  LucideGitMergeConflict,
+  LucideMerge,
+  LucideCircle,
+  LucideCircleCheckBig,
+  LucideCircleQuestionMark,
+  LucideCircleX,
+  LucideRectangleGoggles,
+  LucideTriangleAlert
+} from 'lucide-vue-next'
 import type { RepositoryData } from '../../../shared/repository'
 import SvnLogDialog from './SvnLogDialog.vue'
 import RevertConfirmDialog from './RevertConfirmDialog.vue'
 import SvnDiffViewer from './SvnDiffViewer.vue'
 import SvnDiffViewerReadOnly from './SvnDiffViewerReadOnly.vue'
+import MergeProgressDialog from './MergeProgressDialog.vue'
 
 const props = defineProps<{
   isActive: boolean
@@ -35,6 +71,7 @@ interface AffectedFile {
 const api = window.api
 
 const localRepositories = ref<RepositoryData[]>([])
+const remoteRepositories = ref<RepositoryData[]>([])
 const svnLogs = ref<SvnLogEntry[]>([])
 const selectedSourceRepo = ref<string>('')
 const selectedTargetRepos = ref<Set<string>>(new Set())
@@ -86,8 +123,9 @@ const endDate = ref<string>('')
 const loadRepositories = async (): Promise<void> => {
   try {
     localRepositories.value = await api.getLocalRepositories()
+    remoteRepositories.value = await api.listRepositories()
   } catch (error) {
-    console.error('Failed to load local repositories:', error)
+    console.error('Failed to load repositories:', error)
   }
 }
 
@@ -118,7 +156,7 @@ watch(selectedSourceRepo, async (newValue) => {
 })
 
 const sourceRepo = computed(() =>
-  localRepositories.value.find((r) => r.url === selectedSourceRepo.value)
+  remoteRepositories.value.find((r) => r.url === selectedSourceRepo.value)
 )
 
 const targetRepos = computed(() =>
@@ -134,10 +172,9 @@ watch(selectedRevisions, async (newValue) => {
   if (newValue.length > 0 && selectedSourceRepo.value) {
     isLoadingFiles.value = true
     try {
-      const repo = localRepositories.value.find((r) => r.url === selectedSourceRepo.value)
+      const repo = remoteRepositories.value.find((r) => r.url === selectedSourceRepo.value)
       if (repo) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        affectedFiles.value = await (api as any).getSvnChangedFiles(repo.url, newValue)
+        affectedFiles.value = await api.getSvnChangedFiles(repo.url, newValue)
       }
     } catch (error) {
       console.error('Failed to load changed files:', error)
@@ -156,6 +193,13 @@ const canMerge = computed(
     selectedTargetRepos.value.size > 0 &&
     selectedRevisions.value.length > 0
 )
+
+// Merge progress dialog states
+const showMergeDialog = ref(false)
+const mergeDialogLogs = ref<string[]>([])
+const mergeDialogCurrentTarget = ref('')
+const mergeDialogLoading = ref(false)
+const mergeDialogSuccess = ref<boolean | null>(null)
 
 const formatDate = (dateString: string): string => {
   try {
@@ -205,7 +249,7 @@ const loadLogs = async (): Promise<void> => {
 
   isLogLoading.value = true
   try {
-    const repo = localRepositories.value.find((r) => r.url === selectedSourceRepo.value)
+    const repo = remoteRepositories.value.find((r) => r.url === selectedSourceRepo.value)
     if (repo) {
       svnLogs.value = await api.getSvnLog(repo.url, 100)
     }
@@ -222,7 +266,7 @@ const performSearch = async (): Promise<void> => {
 
   isLogLoading.value = true
   try {
-    const repo = localRepositories.value.find((r) => r.url === selectedSourceRepo.value)
+    const repo = remoteRepositories.value.find((r) => r.url === selectedSourceRepo.value)
     if (repo) {
       svnLogs.value = await api.getSvnLog(
         repo.url,
@@ -408,35 +452,63 @@ const performMerge = async (): Promise<void> => {
 
   isLoading.value = true
   mergeResults.value = []
-  // reset status sets
+  // reset status sets and dialog
   canCommitRepos.value.clear()
   conflictRepos.value.clear()
+  mergeDialogLogs.value = []
+  mergeDialogCurrentTarget.value = ''
+  mergeDialogLoading.value = true
+  mergeDialogSuccess.value = null
+  showMergeDialog.value = true
 
   try {
-    const selectedLog = svnLogs.value.filter((l) => l.selected)[0]
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    mergeResults.value = await (api as any).performBatchMerge(
-      sourceRepo.value,
-      targetRepos.value,
-      selectedRevisions.value,
-      selectedLog?.message || ''
+    const results: MergeResult[] = await api.performBatchMerge(
+      { ...sourceRepo.value },
+      targetRepos.value.map((r) => ({ ...r })),
+      [...selectedRevisions.value]
     )
 
-    // 根据 mergeResults 更新按钮状态：成功 -> 可提交；包含 conflict 字样 -> 有冲突
-    mergeResults.value.forEach((res) => {
-      const url = res.targetRepoUrl || res.targetRepoName
+    mergeResults.value = results || []
+
+    let anyFailure = false
+
+    for (const res of mergeResults.value) {
+      const url = res.targetRepoUrl || res.targetRepoName || 'unknown'
+      mergeDialogCurrentTarget.value = res.targetRepoName || url
+      mergeDialogLogs.value.push(`开始合并到 ${mergeDialogCurrentTarget.value}`)
+
+      if (res.output) {
+        // append output lines
+        res.output.split(/\r?\n/).forEach((ln) => {
+          if (ln && ln.trim() !== '') mergeDialogLogs.value.push(ln)
+        })
+      }
+
       if (res.success) {
+        mergeDialogLogs.value.push(`合并成功: ${mergeDialogCurrentTarget.value}`)
         canCommitRepos.value.add(url)
         conflictRepos.value.delete(url)
       } else {
-        const msg = (res.message || '').toLowerCase()
-        if (msg.includes('conflict') || msg.includes('冲突')) {
+        anyFailure = true
+        const msg = res.message || '未知错误'
+        mergeDialogLogs.value.push(`合并失败: ${msg}`)
+        const lower = msg.toLowerCase()
+        if (lower.includes('conflict') || lower.includes('冲突')) {
           conflictRepos.value.add(url)
-          canCommitRepos.value.delete(url)
         }
       }
-    })
+
+      // allow UI to update and scroll
+      await new Promise((r) => setTimeout(r, 80))
+    }
+
+    mergeDialogLoading.value = false
+    mergeDialogSuccess.value = !anyFailure
   } catch (error) {
+    const errMsg = error instanceof Error ? error.message : String(error)
+    mergeDialogLogs.value.push(`合并过程发生异常: ${errMsg}`)
+    mergeDialogLoading.value = false
+    mergeDialogSuccess.value = false
     console.error('Merge failed:', error)
   } finally {
     isLoading.value = false
@@ -451,12 +523,12 @@ const performMerge = async (): Promise<void> => {
 
       <!-- Source Repository Selection -->
       <div class="merge-section">
-        <h3 class="section-subtitle">步骤 1: 选择源仓库</h3>
+        <h3 class="section-subtitle">步骤 1: 选择远程仓库</h3>
         <div class="control-group">
-          <label class="control-label">源仓库:</label>
+          <label class="control-label">远程仓库:</label>
           <select v-model="selectedSourceRepo" class="app-select">
-            <option value="">-- 选择一个本地仓库 --</option>
-            <option v-for="repo in localRepositories" :key="repo.url" :value="repo.url">
+            <option value="">-- 选择一个远程仓库 --</option>
+            <option v-for="repo in remoteRepositories" :key="repo.url" :value="repo.url">
               {{ repo.alias }} ({{ repo.url }})
             </option>
           </select>
@@ -584,7 +656,7 @@ const performMerge = async (): Promise<void> => {
       <!-- Target Repositories Selection -->
       <div v-if="selectedSourceRepo" class="merge-section">
         <h3 class="section-subtitle">
-          <span>步骤 3: 选择目标仓库</span>
+          <span>步骤 3: 选择本地仓库</span>
           <div class="subtitle-actions">
             <div class="panel-action-group">
               <button
@@ -607,7 +679,7 @@ const performMerge = async (): Promise<void> => {
             class="target-repo-panel"
           >
             <div class="panel-header">
-              <div class="panel-left">
+              <div class="panel-top-row" style="display: flex; align-items: center">
                 <input
                   type="checkbox"
                   class="repo-checkbox"
@@ -615,8 +687,47 @@ const performMerge = async (): Promise<void> => {
                   @change="toggleTargetRepo(repo.url)"
                 />
                 <span class="repo-alias">{{ repo.alias }}</span>
+                <span
+                  v-if="mergeResults && mergeResults.length"
+                  class="merge-status-icon"
+                  style="margin-left: 8px"
+                >
+                  <template v-for="result in mergeResults" :key="result.targetRepoUrl">
+                    <template v-if="result.targetRepoUrl === repo.url">
+                      <template
+                        v-if="
+                          result.success &&
+                          !(
+                            result.output &&
+                            result.output.split('\n').some((ln) => ln.trim().startsWith('C'))
+                          )
+                        "
+                      >
+                        <span title="合并成功" style="color: var(--color-success); font-size: 18px">
+                          <LucideCircleCheckBig :size="36" :color="'green'" />
+                        </span>
+                      </template>
+                      <template
+                        v-else-if="
+                          result.output &&
+                          result.output.split('\n').some((ln) => ln.trim().startsWith('C'))
+                        "
+                      >
+                        <span title="合并冲突" style="color: #eab308; font-size: 18px">
+                          <LucideTriangleAlert :size="36" :color="'yellow'" />
+                        </span>
+                      </template>
+                      <template v-else>
+                        <span title="合并失败" style="color: var(--color-error); font-size: 18px">
+                          <LucideCircleX :size="36" :color="'red'" />
+                        </span>
+                        >
+                      </template>
+                    </template>
+                  </template>
+                </span>
               </div>
-              <div class="panel-right">
+              <div class="panel-bottom-row">
                 <div class="panel-action-group">
                   <button
                     type="button"
@@ -645,8 +756,6 @@ const performMerge = async (): Promise<void> => {
                     type="button"
                     class="update-btn"
                     :title="`提交 ${repo.alias}`"
-                    :class="{ 'commit-active': canCommitRepos.has(repo.url) }"
-                    :disabled="!canCommitRepos.has(repo.url)"
                     @click="onCommitClick(repo.url)"
                   >
                     <CheckCircle :size="16" />
@@ -658,8 +767,6 @@ const performMerge = async (): Promise<void> => {
                     type="button"
                     class="revert-btn"
                     :title="`检查冲突 ${repo.alias}`"
-                    :class="{ 'conflict-active': conflictRepos.has(repo.url) }"
-                    :disabled="!conflictRepos.has(repo.url)"
                     @click="onConflictClick(repo.url)"
                   >
                     <AlertCircle :size="16" />
@@ -716,6 +823,14 @@ const performMerge = async (): Promise<void> => {
     :target-revision="diffViewerReadOnlyTargetRevision"
     @close="handleCloseDiffViewerReadOnly"
   />
+
+  <!-- Merge Progress Dialog -->
+  <MergeProgressDialog
+    :visible="showMergeDialog"
+    :results="mergeDialogPanels"
+    :is-loading="mergeDialogLoading"
+    @close="showMergeDialog = false"
+  />
 </template>
 
 <style scoped>
@@ -737,10 +852,10 @@ const performMerge = async (): Promise<void> => {
 }
 
 .section-subtitle {
-  font-size: 14px;
-  font-weight: 600;
-  margin-bottom: 0;
-  color: var(--color-text-primary);
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  margin-top: 2px;
+  user-select: none;
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -777,6 +892,10 @@ const performMerge = async (): Promise<void> => {
 
 /* 使用现有的 .update-btn / .panel-action-label 样式来匹配更新/还原按钮 */
 
+.panel-action-label {
+  font-size: 12px;
+}
+
 .merge-section > div:not(.section-subtitle):nth-of-type(n + 2) {
   padding: 16px;
 }
@@ -801,7 +920,7 @@ const performMerge = async (): Promise<void> => {
   border-radius: 6px;
   background: var(--color-background-primary);
   color: var(--color-text-primary);
-  font-size: 14px;
+  font-size: 12px;
 }
 
 .app-select:focus {
@@ -1166,8 +1285,8 @@ const performMerge = async (): Promise<void> => {
 
 .panel-header {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  align-items: stretch;
   padding: 12px 16px;
   background: var(--color-background-secondary);
   border-bottom: 1px solid var(--color-border);
@@ -1193,7 +1312,7 @@ const performMerge = async (): Promise<void> => {
   flex: 1;
   font-weight: 600;
   color: var(--color-text-primary);
-  font-size: 12px;
+  font-size: 15px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1263,14 +1382,21 @@ const performMerge = async (): Promise<void> => {
   align-items: center;
   gap: 2px;
 }
-
-.panel-action-label {
-  font-size: 11px;
-  color: var(--color-text-secondary);
-  margin-top: 2px;
-  user-select: none;
+.panel-top-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
 }
-
+.panel-bottom-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  justify-content: flex-start;
+  width: 100%;
+  margin-top: 4px;
+}
 /* 提交/冲突 激活样式 */
 .update-btn.commit-active {
   background: var(--color-success);

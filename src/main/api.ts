@@ -1,5 +1,7 @@
 import { ipcMain, dialog, BrowserWindow } from 'electron'
 import { execSync } from 'child_process'
+import * as path from 'path'
+import * as fs from 'fs'
 import type { RepositoryData } from '../shared/repository'
 import {
   createRepository,
@@ -91,44 +93,33 @@ export const apiHandlers = {
     endDate: string = ''
   ): Promise<Array<{ revision: number; author: string; date: string; message: string }>> => {
     try {
+      // 直接使用 repoPath，无需判断本地路径
       let cmd = `svn log "${repoPath}" --limit ${limit} --xml`
-      
+
       // Add search parameter if provided
       if (searchKeyword) {
         cmd += ` --search "${searchKeyword}"`
       }
-      
-      // Add date range if provided
-      if (startDate || endDate) {
+
+      // When both dates are provided, extend endDate to next day to include the entire end date
+      if (startDate && endDate) {
         let revisionRange = ''
-        
-        if (startDate && endDate) {
-          // When both dates are provided, extend endDate to next day to include the entire end date
-          const endDateObj = new Date(endDate)
-          endDateObj.setDate(endDateObj.getDate() + 1)
-          const nextDay = endDateObj.toISOString().split('T')[0]
-          revisionRange = `{${startDate}}:{${nextDay}}`
-        } else if (startDate) {
-          // Only start date: from startDate to HEAD
-          revisionRange = `{${startDate}}:HEAD`
-        } else if (endDate) {
-          // Only end date: from beginning to endDate (extended to next day)
-          const endDateObj = new Date(endDate)
-          endDateObj.setDate(endDateObj.getDate() + 1)
-          const nextDay = endDateObj.toISOString().split('T')[0]
-          revisionRange = `1:{${nextDay}}`
-        }
-        
+        const endDateObj = new Date(endDate)
+        endDateObj.setDate(endDateObj.getDate() + 1)
+        const nextDay = endDateObj.toISOString().split('T')[0]
+        revisionRange = `{${startDate}}:{${nextDay}}`
         if (revisionRange) {
           cmd += ` -r ${revisionRange}`
         }
       }
-      
+
       const output = execSync(cmd, { encoding: 'utf-8' })
 
       // Parse XML output
       const logs: Array<{ revision: number; author: string; date: string; message: string }> = []
-      const revisionRegex = /<logentry\s+revision="(\d+)"[^>]*>[\s\S]*?<author>([^<]*)<\/author>[\s\S]*?<date>([^<]*)<\/date>[\s\S]*?<msg>([^<]*)<\/msg>/g
+
+      const revisionRegex =
+        /<logentry\s+revision="(\d+)"[^>]*>[\s\S]*?<author>([^<]*)<\/author>[\s\S]*?<date>([^<]*)<\/date>[\s\S]*?<msg>([^<]*)<\/msg>/g
 
       let match
       while ((match = revisionRegex.exec(output)) !== null) {
@@ -264,7 +255,6 @@ export const apiHandlers = {
     filePath: string
   ): Promise<{ success: boolean; diff: string; message: string }> => {
     try {
-      const path = require('path')
       // Convert to relative path if absolute
       const relativePath = path.isAbsolute(filePath) ? path.relative(repoPath, filePath) : filePath
       const cmd = `cd "${repoPath}" && svn diff "${relativePath}"`
@@ -272,7 +262,7 @@ export const apiHandlers = {
       const output = execSync(cmd, { encoding: 'utf-8' })
 
       return {
-       success: true,
+        success: true,
         diff: output,
         message: '获取差异成功'
       }
@@ -295,7 +285,6 @@ export const apiHandlers = {
     targetRevision: number
   ): Promise<{ success: boolean; diff: string; message: string }> => {
     try {
-      const path = require('path')
       // Convert to relative path if absolute
       const relativePath = path.isAbsolute(filePath) ? path.relative(repoPath, filePath) : filePath
       const cmd = `cd "${repoPath}" && svn diff -r${baseRevision}:${targetRevision} "${relativePath}"`
@@ -327,24 +316,27 @@ export const apiHandlers = {
       let cmd: string
       if (revision) {
         // Get file content from specific revision
-        const path = require('path')
         // Convert to relative path if absolute
-        const relativePath = path.isAbsolute(filePath) ? path.relative(repoPath, filePath) : filePath
-        
+        const relativePath = path.isAbsolute(filePath)
+          ? path.relative(repoPath, filePath)
+          : filePath
+
         // Get the base URL of the working copy
-        const infoCmd = `cd "${repoPath}" && svn info --show-item url`
-        const wcUrl = execSync(infoCmd, { encoding: 'utf-8' }).trim()
-        
+        // 判断repoPath是否为本地路径，如果是则直接使用，否则执行svn info获取URL
+        let wcUrl = repoPath
+        if (fs.existsSync(repoPath) && fs.lstatSync(repoPath).isDirectory()) {
+          const infoCmd = `cd "${repoPath}" && svn info --show-item url`
+          wcUrl = execSync(infoCmd, { encoding: 'utf-8' }).trim()
+        }
+
         // Build the full file URL - ensure no double slashes
         const cleanRelativePath = relativePath.replace(/\\/g, '/').replace(/^\//, '')
         const fileUrl = `${wcUrl}/${cleanRelativePath}`
-        
+
         // For deleted files, we need to use peg revision with the URL
         cmd = `svn cat "${fileUrl}"@${revision}`
       } else {
         // Get local file content
-        const path = require('path')
-        const fs = require('fs')
         // Check if filePath is already absolute, if not, join with repoPath
         const fullPath = path.isAbsolute(filePath) ? filePath : path.join(repoPath, filePath)
         const content = fs.readFileSync(fullPath, 'utf-8')
@@ -377,7 +369,6 @@ export const apiHandlers = {
     filePath: string
   ): Promise<{ success: boolean; message: string }> => {
     try {
-      const path = require('path')
       // Check if filePath is absolute
       const absolutePath = path.isAbsolute(filePath) ? filePath : path.join(repoPath, filePath)
       // Convert to relative path for svn command
@@ -405,7 +396,6 @@ export const apiHandlers = {
     filePath: string
   ): Promise<{ success: boolean; message: string }> => {
     try {
-      const path = require('path')
       // Convert to relative path if absolute
       const relativePath = path.isAbsolute(filePath) ? path.relative(repoPath, filePath) : filePath
       // Mark the conflict as resolved, keeping local version
@@ -433,8 +423,6 @@ export const apiHandlers = {
     content: string
   ): Promise<{ success: boolean; message: string }> => {
     try {
-      const path = require('path')
-      const fs = require('fs')
       // Check if filePath is already absolute, if not, join with repoPath
       const fullPath = path.isAbsolute(filePath) ? filePath : path.join(repoPath, filePath)
       fs.writeFileSync(fullPath, content, 'utf-8')
@@ -460,11 +448,9 @@ export const apiHandlers = {
     if (revisions.length === 0) return []
     try {
       // Get the SVN URL of the working copy to properly compute relative paths
-      const infoCmd = `cd "${repoPath}" && svn info --show-item url`
-      const wcUrl = execSync(infoCmd, { encoding: 'utf-8' }).trim()
-      
-      const result: Array<{ revision: number; files: Array<{ status: string; path: string }> }> =
-        []
+      const wcUrl = repoPath
+
+      const result: Array<{ revision: number; files: Array<{ status: string; path: string }> }> = []
       for (const revision of revisions) {
         const cmd = `svn diff --summarize -r${revision - 1}:${revision} "${repoPath}"`
         const output = execSync(cmd, { encoding: 'utf-8' })
@@ -475,9 +461,9 @@ export const apiHandlers = {
           const match = line.match(/^([A-Z])\s+(.+)$/)
           if (match) {
             const status = match[1]
-            let filePath = match[2]
+            const filePath = match[2]
             // Remove either local path or URL prefix to get relative path
-            let relativePath = filePath
+            const relativePath = filePath
               .replace(repoPath, '')
               .replace(wcUrl, '')
               .replace(/^\//, '')
@@ -501,8 +487,7 @@ export const apiHandlers = {
   performBatchMerge: async (
     sourceRepo: RepositoryData,
     targetRepos: RepositoryData[],
-    revisions: number[],
-    sourceMessage: string
+    revisions: number[]
   ): Promise<
     Array<{
       targetRepoName: string
@@ -519,25 +504,26 @@ export const apiHandlers = {
       message: string
       output?: string
     }> = []
-    const revisionList = revisions.join(', ')
-    const mergeMessage = `Merged revision(s) ${revisionList} from ${sourceRepo.alias}: ${sourceMessage}`
-
     for (const targetRepo of targetRepos) {
       try {
-        // Execute merge command
-        const mergeCmd = `svn merge --accept=postpone -r0:${revisions[revisions.length - 1]} "${sourceRepo.url}" "${targetRepo.url}"`
-        execSync(mergeCmd, { encoding: 'utf-8' })
-
-        // Commit changes
-        const commitCmd = `svn commit "${targetRepo.url}" -m "${mergeMessage}"`
-        const commitOutput = execSync(commitCmd, { encoding: 'utf-8' })
-
+        // 先排序，去重
+        const sortedRevisions = Array.from(new Set(revisions)).sort((a, b) => a - b)
+        if (sortedRevisions.length === 0) throw new Error('未指定需要合并的版本')
+        // 使用-c参数批量合并多个不连续的提交
+        const revStr = sortedRevisions.join(',')
+        const mergeCmd = `svn merge --accept=postpone -c ${revStr} "${sourceRepo.url}" "${targetRepo.url}"`
+        const output = execSync(mergeCmd, {
+          encoding: 'utf-8',
+          cwd: targetRepo.url
+        })
+        // 检查是否有冲突文件（C开头的行）
+        const hasConflict = output.split('\n').some((line) => line.trim().startsWith('C'))
         results.push({
           targetRepoName: targetRepo.alias,
           targetRepoUrl: targetRepo.url,
-          success: true,
-          message: '合并成功',
-          output: commitOutput
+          success: !hasConflict,
+          message: hasConflict ? '合并冲突' : '合并成功',
+          output
         })
       } catch (error) {
         results.push({
