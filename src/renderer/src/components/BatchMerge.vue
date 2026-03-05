@@ -2,44 +2,29 @@
 // 合并进度面板数据
 const mergeDialogPanels = computed(() => {
   return mergeResults.value.map((res) => {
-    let files: string[] = []
-    if (res.output) {
-      files = res.output
-        .split(/\r?\n/)
-        .filter((ln) => ln && ln.trim() && /\.(\w+)$/.test(ln))
-        .map((ln) => ln.trim())
-    }
+    // 使用 API 直接返回的 files 数组
+    const files = res.files || []
     return {
       targetRepoName: res.targetRepoName,
+      targetRepoPath: res.targetRepoPath || res.targetRepoUrl,
       success: res.success,
+      isMerging: res.isMerging,
       files
     }
   })
 })
 import { onMounted, ref, computed, watch } from 'vue'
 import {
-  AlertCircle,
-  CheckCircle,
   Play,
   X,
   Search,
-  RefreshCw,
-  RotateCcw,
-  LucideWandSparkles,
-  LucideFileWarning,
-  LucideGitMergeConflict,
-  LucideMerge,
-  LucideCircle,
+  FolderOpen,
   LucideCircleCheckBig,
-  LucideCircleQuestionMark,
   LucideCircleX,
-  LucideRectangleGoggles,
   LucideTriangleAlert
 } from 'lucide-vue-next'
 import type { RepositoryData } from '../../../shared/repository'
 import SvnLogDialog from './SvnLogDialog.vue'
-import RevertConfirmDialog from './RevertConfirmDialog.vue'
-import SvnDiffViewer from './SvnDiffViewer.vue'
 import SvnDiffViewerReadOnly from './SvnDiffViewerReadOnly.vue'
 import MergeProgressDialog from './MergeProgressDialog.vue'
 
@@ -58,9 +43,12 @@ interface SvnLogEntry {
 interface MergeResult {
   targetRepoName: string
   targetRepoUrl: string
+  targetRepoPath?: string
   success: boolean
   message: string
+  files?: string[]
   output?: string
+  isMerging?: boolean
 }
 
 interface AffectedFile {
@@ -76,9 +64,6 @@ const svnLogs = ref<SvnLogEntry[]>([])
 const selectedSourceRepo = ref<string>('')
 const selectedTargetRepos = ref<Set<string>>(new Set())
 const mergeResults = ref<MergeResult[]>([])
-// 状态集合：哪些仓库可以提交 / 存在冲突
-const canCommitRepos = ref<Set<string>>(new Set())
-const conflictRepos = ref<Set<string>>(new Set())
 const isLoading = ref(false)
 const isLogLoading = ref(false)
 // (removed expandedResults used by removed Merge Results panel)
@@ -87,26 +72,12 @@ const isLoadingFiles = ref(false)
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const tableRef = ref<any>(null)
 
-// Repository update states
-const updatingRepos = ref<Set<string>>(new Set())
-
 // SVN Log Dialog states
 const showSvnLogDialog = ref(false)
 const svnLogTitle = ref('SVN 命令执行')
 const svnCommandLogs = ref<string[]>([])
 const svnLogLoading = ref(false)
 const svnLogSuccess = ref<boolean | null>(null)
-
-// Revert Confirm Dialog states
-const showRevertDialog = ref(false)
-const revertDialogRepoUrl = ref<string>('')
-const revertDialogFiles = ref<Array<{ status: string; path: string }>>([])
-const pendingRevertRepoUrl = ref<string>('')
-
-// SVN Diff Viewer states
-const showDiffViewer = ref(false)
-const diffViewerRepoPath = ref<string>('')
-const diffViewerFilePath = ref<string>('')
 
 // SVN Diff Viewer ReadOnly states (for revision diff)
 const showDiffViewerReadOnly = ref(false)
@@ -167,6 +138,21 @@ const selectedRevisions = computed(() =>
   svnLogs.value.filter((log) => log.selected).map((log) => log.revision)
 )
 
+const getMergeResultForRepo = (repoUrl: string): MergeResult | undefined => {
+  return mergeResults.value.find((result) => result.targetRepoUrl === repoUrl)
+}
+
+const hasConflictFiles = (result?: MergeResult): boolean => {
+  return Boolean(result?.files?.some((file) => file.startsWith('C')))
+}
+
+const getRepoMergeStatus = (repoUrl: string): 'success' | 'conflict' | 'error' | null => {
+  const result = getMergeResultForRepo(repoUrl)
+  if (!result || result.isMerging) return null
+  if (!result.success) return 'error'
+  return hasConflictFiles(result) ? 'conflict' : 'success'
+}
+
 // Auto-load changed files when revisions are selected
 watch(selectedRevisions, async (newValue) => {
   if (newValue.length > 0 && selectedSourceRepo.value) {
@@ -200,6 +186,7 @@ const mergeDialogLogs = ref<string[]>([])
 const mergeDialogCurrentTarget = ref('')
 const mergeDialogLoading = ref(false)
 const mergeDialogSuccess = ref<boolean | null>(null)
+const hasPendingMerge = ref(false)
 
 const formatDate = (dateString: string): string => {
   try {
@@ -297,115 +284,19 @@ const toggleTargetRepo = (repoUrl: string): void => {
   }
 }
 
+const openRepoDirectory = async (repoUrl: string): Promise<void> => {
+  try {
+    const result = await api.openLocalDirectory(repoUrl)
+    if (!result.success) {
+      alert(`打开目录失败: ${result.message}`)
+    }
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : '打开目录失败'
+    alert(`打开目录失败: ${errorMsg}`)
+  }
+}
+
 // (toggleResultExpanded removed — no merge results panel now)
-
-const performSvnUpdate = async (repoUrl: string): Promise<void> => {
-  svnLogTitle.value = `更新仓库: ${repoUrl}`
-  svnCommandLogs.value = []
-  svnLogLoading.value = true
-  svnLogSuccess.value = null
-  showSvnLogDialog.value = true
-  updatingRepos.value.add(repoUrl)
-
-  try {
-    const result = await api.svnUpdate(repoUrl)
-    svnCommandLogs.value = result.logs || []
-    svnLogSuccess.value = result.success
-
-    if (!result.success) {
-      console.error('SVN update failed:', result.message)
-    }
-  } catch (error) {
-    const errorMsg = error instanceof Error ? error.message : '更新失败，请检查控制台日志'
-    svnCommandLogs.value = [errorMsg]
-    svnLogSuccess.value = false
-    console.error('SVN update failed:', error)
-  } finally {
-    svnLogLoading.value = false
-    updatingRepos.value.delete(repoUrl)
-  }
-}
-
-const performSvnRevert = async (repoUrl: string): Promise<void> => {
-  try {
-    console.log('[performSvnRevert] Getting status for repo:', repoUrl)
-    // Get the status of modified files first
-    const statusResult = await window.api.getSvnStatus(repoUrl)
-    console.log('[performSvnRevert] Status result:', statusResult)
-    const { files } = statusResult
-
-    // Show dialog
-    revertDialogRepoUrl.value = repoUrl
-    revertDialogFiles.value = files || []
-    pendingRevertRepoUrl.value = repoUrl
-    showRevertDialog.value = true
-  } catch (error) {
-    console.error('[performSvnRevert] Failed to get SVN status:', error)
-    // Still show dialog even if status fetch failed
-    revertDialogRepoUrl.value = repoUrl
-    revertDialogFiles.value = []
-    pendingRevertRepoUrl.value = repoUrl
-    showRevertDialog.value = true
-  }
-}
-
-// 占位空函数：待实现提交与冲突处理逻辑
-const onCommitClick = (repoUrl: string): void => {
-  console.log('[onCommitClick] placeholder for', repoUrl)
-}
-
-const onConflictClick = (repoUrl: string): void => {
-  console.log('[onConflictClick] placeholder for', repoUrl)
-}
-
-const handleConfirmRevert = async (
-  selectedFiles: Array<{ status: string; path: string }>
-): Promise<void> => {
-  const repoUrl = pendingRevertRepoUrl.value
-  showRevertDialog.value = false
-
-  svnLogTitle.value = `恢复仓库: ${repoUrl} (${selectedFiles.length} 个文件)`
-  svnCommandLogs.value = []
-  svnLogLoading.value = true
-  svnLogSuccess.value = null
-  showSvnLogDialog.value = true
-
-  try {
-    // Extract file paths from selected files
-    const filePaths = selectedFiles.map((f) => f.path)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const result = await (api as any).svnRevert(repoUrl, filePaths)
-    svnCommandLogs.value = result.logs || []
-    svnLogSuccess.value = result.success
-
-    if (!result.success) {
-      console.error('SVN revert failed:', result.message)
-    }
-  } catch (error) {
-    const errorMsg = error instanceof Error ? error.message : '恢复失败，请检查控制台日志'
-    svnCommandLogs.value = [errorMsg]
-    svnLogSuccess.value = false
-    console.error('SVN revert failed:', error)
-  } finally {
-    svnLogLoading.value = false
-    pendingRevertRepoUrl.value = ''
-  }
-}
-
-const handleViewDiff = (file: { status: string; path: string }): void => {
-  diffViewerRepoPath.value = revertDialogRepoUrl.value
-  diffViewerFilePath.value = file.path
-  showDiffViewer.value = true
-}
-
-const handleCloseDiffViewer = (): void => {
-  showDiffViewer.value = false
-  // Reset paths to ensure clean state for next open
-  setTimeout(() => {
-    diffViewerRepoPath.value = ''
-    diffViewerFilePath.value = ''
-  }, 300)
-}
 
 // Handle clicking on affected file to view revision diff
 const handleViewAffectedFileDiff = (
@@ -432,6 +323,48 @@ const handleCloseDiffViewerReadOnly = (): void => {
   }, 300)
 }
 
+const handleMergeDialogRefresh = async (): Promise<void> => {
+  if (mergeResults.value.length === 0) return
+
+  const refreshedResults = await Promise.all(
+    mergeResults.value.map(async (result) => {
+      const repoPath = result.targetRepoPath || result.targetRepoUrl
+      if (!repoPath) return result
+
+      try {
+        const statusResult = await api.getSvnStatus(repoPath)
+        const files = statusResult.files
+          .map((f) => `${f.status}  ${f.path}`)
+          .filter((f) => ['C', 'M', 'A', 'D', 'R'].some((st) => f.startsWith(st)))
+
+        if (result.success) {
+          return {
+            ...result,
+            files,
+            message: files.some((file) => file.startsWith('C')) ? '合并冲突' : '合并成功'
+          }
+        }
+
+        return {
+          ...result,
+          files
+        }
+      } catch (error) {
+        console.warn('[handleMergeDialogRefresh] Failed to refresh status for', repoPath, error)
+        return result
+      }
+    })
+  )
+
+  mergeResults.value = refreshedResults
+}
+
+const handleMergeCommitSuccess = (): void => {
+  // 提交成功后清除未完成合并标志
+  hasPendingMerge.value = false
+  showMergeDialog.value = false
+}
+
 // Check if affected file can show diff (not a directory)
 // Files have extensions (contain .), directories don't
 const canShowAffectedFileDiff = (file: { status: string; path: string }): boolean => {
@@ -442,19 +375,33 @@ const canShowAffectedFileDiff = (file: { status: string; path: string }): boolea
   return fileName.includes('.')
 }
 
-const handleCancelRevert = (): void => {
-  showRevertDialog.value = false
-  pendingRevertRepoUrl.value = ''
-}
-
 const performMerge = async (): Promise<void> => {
   if (!canMerge.value || !sourceRepo.value) return
 
+  // 如果有待处理的合并，直接显示对话框
+  if (hasPendingMerge.value) {
+    showMergeDialog.value = true
+    return
+  }
+
+  hasPendingMerge.value = true
   isLoading.value = true
-  mergeResults.value = []
-  // reset status sets and dialog
-  canCommitRepos.value.clear()
-  conflictRepos.value.clear()
+  const source = { ...sourceRepo.value }
+  const targets = targetRepos.value.map((r) => ({ ...r }))
+  const revisions = [...selectedRevisions.value]
+
+  // 先渲染所有目标仓库的面板，避免执行过程中出现“暂无合并结果”
+  mergeResults.value = targets.map((target) => ({
+    targetRepoName: target.alias,
+    targetRepoUrl: target.url,
+    targetRepoPath: target.url,
+    success: false,
+    message: '合并中',
+    files: [],
+    isMerging: true
+  }))
+
+  // reset dialog
   mergeDialogLogs.value = []
   mergeDialogCurrentTarget.value = ''
   mergeDialogLoading.value = true
@@ -462,45 +409,41 @@ const performMerge = async (): Promise<void> => {
   showMergeDialog.value = true
 
   try {
-    const results: MergeResult[] = await api.performBatchMerge(
-      { ...sourceRepo.value },
-      targetRepos.value.map((r) => ({ ...r })),
-      [...selectedRevisions.value]
-    )
-
-    mergeResults.value = results || []
-
     let anyFailure = false
 
-    for (const res of mergeResults.value) {
-      const url = res.targetRepoUrl || res.targetRepoName || 'unknown'
-      mergeDialogCurrentTarget.value = res.targetRepoName || url
-      mergeDialogLogs.value.push(`开始合并到 ${mergeDialogCurrentTarget.value}`)
+    const mergeTasks = targets.map(async (target) => {
+      mergeDialogLogs.value.push(`开始合并到 ${target.alias}`)
+      mergeDialogCurrentTarget.value = target.alias
+
+      const res: MergeResult = await api.performSingleMerge(source, target, revisions)
+      const url = res.targetRepoUrl || target.url
+
+      mergeResults.value = mergeResults.value.map((item) => {
+        if (item.targetRepoUrl !== target.url) return item
+        return {
+          ...res,
+          targetRepoName: res.targetRepoName || target.alias,
+          targetRepoUrl: url,
+          isMerging: false
+        }
+      })
 
       if (res.output) {
-        // append output lines
         res.output.split(/\r?\n/).forEach((ln) => {
-          if (ln && ln.trim() !== '') mergeDialogLogs.value.push(ln)
+          if (ln && ln.trim() !== '') mergeDialogLogs.value.push(`[${target.alias}] ${ln}`)
         })
       }
 
       if (res.success) {
-        mergeDialogLogs.value.push(`合并成功: ${mergeDialogCurrentTarget.value}`)
-        canCommitRepos.value.add(url)
-        conflictRepos.value.delete(url)
+        mergeDialogLogs.value.push(`合并成功: ${target.alias}`)
       } else {
         anyFailure = true
         const msg = res.message || '未知错误'
-        mergeDialogLogs.value.push(`合并失败: ${msg}`)
-        const lower = msg.toLowerCase()
-        if (lower.includes('conflict') || lower.includes('冲突')) {
-          conflictRepos.value.add(url)
-        }
+        mergeDialogLogs.value.push(`合并失败: ${target.alias} - ${msg}`)
       }
+    })
 
-      // allow UI to update and scroll
-      await new Promise((r) => setTimeout(r, 80))
-    }
+    await Promise.all(mergeTasks)
 
     mergeDialogLoading.value = false
     mergeDialogSuccess.value = !anyFailure
@@ -687,44 +630,28 @@ const performMerge = async (): Promise<void> => {
                   @change="toggleTargetRepo(repo.url)"
                 />
                 <span class="repo-alias">{{ repo.alias }}</span>
-                <span
-                  v-if="mergeResults && mergeResults.length"
-                  class="merge-status-icon"
-                  style="margin-left: 8px"
-                >
-                  <template v-for="result in mergeResults" :key="result.targetRepoUrl">
-                    <template v-if="result.targetRepoUrl === repo.url">
-                      <template
-                        v-if="
-                          result.success &&
-                          !(
-                            result.output &&
-                            result.output.split('\n').some((ln) => ln.trim().startsWith('C'))
-                          )
-                        "
-                      >
-                        <span title="合并成功" style="color: var(--color-success); font-size: 18px">
-                          <LucideCircleCheckBig :size="36" :color="'green'" />
-                        </span>
-                      </template>
-                      <template
-                        v-else-if="
-                          result.output &&
-                          result.output.split('\n').some((ln) => ln.trim().startsWith('C'))
-                        "
-                      >
-                        <span title="合并冲突" style="color: #eab308; font-size: 18px">
-                          <LucideTriangleAlert :size="36" :color="'yellow'" />
-                        </span>
-                      </template>
-                      <template v-else>
-                        <span title="合并失败" style="color: var(--color-error); font-size: 18px">
-                          <LucideCircleX :size="36" :color="'red'" />
-                        </span>
-                        >
-                      </template>
-                    </template>
-                  </template>
+                <span v-if="getMergeResultForRepo(repo.url)" class="merge-status-icon">
+                  <span
+                    v-if="getRepoMergeStatus(repo.url) === 'success'"
+                    title="合并成功"
+                    class="merge-status-symbol is-success"
+                  >
+                    <LucideCircleCheckBig :size="20" />
+                  </span>
+                  <span
+                    v-else-if="getRepoMergeStatus(repo.url) === 'conflict'"
+                    title="合并冲突"
+                    class="merge-status-symbol is-conflict"
+                  >
+                    <LucideTriangleAlert :size="20" />
+                  </span>
+                  <span
+                    v-else-if="getRepoMergeStatus(repo.url) === 'error'"
+                    title="合并失败"
+                    class="merge-status-symbol is-error"
+                  >
+                    <LucideCircleX :size="20" />
+                  </span>
                 </span>
               </div>
               <div class="panel-bottom-row">
@@ -732,46 +659,12 @@ const performMerge = async (): Promise<void> => {
                   <button
                     type="button"
                     class="update-btn"
-                    :title="`更新 ${repo.alias}`"
-                    :disabled="updatingRepos.has(repo.url)"
-                    @click="performSvnUpdate(repo.url)"
+                    :title="`打开目录 ${repo.alias}`"
+                    @click="openRepoDirectory(repo.url)"
                   >
-                    <RefreshCw :size="16" :class="{ 'is-spinning': updatingRepos.has(repo.url) }" />
+                    <FolderOpen :size="16" />
                   </button>
-                  <div class="panel-action-label">更新</div>
-                </div>
-                <div class="panel-action-group">
-                  <button
-                    type="button"
-                    class="revert-btn"
-                    :title="`恢复 ${repo.alias}`"
-                    @click="performSvnRevert(repo.url)"
-                  >
-                    <RotateCcw :size="16" />
-                  </button>
-                  <div class="panel-action-label">还原</div>
-                </div>
-                <div class="panel-action-group">
-                  <button
-                    type="button"
-                    class="update-btn"
-                    :title="`提交 ${repo.alias}`"
-                    @click="onCommitClick(repo.url)"
-                  >
-                    <CheckCircle :size="16" />
-                  </button>
-                  <div class="panel-action-label">提交</div>
-                </div>
-                <div class="panel-action-group">
-                  <button
-                    type="button"
-                    class="revert-btn"
-                    :title="`检查冲突 ${repo.alias}`"
-                    @click="onConflictClick(repo.url)"
-                  >
-                    <AlertCircle :size="16" />
-                  </button>
-                  <div class="panel-action-label">冲突</div>
+                  <div class="panel-action-label">目录</div>
                 </div>
               </div>
             </div>
@@ -796,24 +689,6 @@ const performMerge = async (): Promise<void> => {
     @close="showSvnLogDialog = false"
   />
 
-  <!-- Revert Confirm Dialog -->
-  <RevertConfirmDialog
-    :visible="showRevertDialog"
-    :repo-url="revertDialogRepoUrl"
-    :files="revertDialogFiles"
-    @confirm="handleConfirmRevert"
-    @cancel="handleCancelRevert"
-    @view-diff="handleViewDiff"
-  />
-
-  <!-- SVN Diff Viewer -->
-  <SvnDiffViewer
-    :visible="showDiffViewer"
-    :repo-path="diffViewerRepoPath"
-    :file-path="diffViewerFilePath"
-    @close="handleCloseDiffViewer"
-  />
-
   <!-- SVN Diff Viewer ReadOnly (for revision diff) -->
   <SvnDiffViewerReadOnly
     :visible="showDiffViewerReadOnly"
@@ -829,7 +704,11 @@ const performMerge = async (): Promise<void> => {
     :visible="showMergeDialog"
     :results="mergeDialogPanels"
     :is-loading="mergeDialogLoading"
+    :source-repo-url="selectedSourceRepo"
+    :selected-revisions="selectedRevisions"
     @close="showMergeDialog = false"
+    @refresh="handleMergeDialogRefresh"
+    @commit-success="handleMergeCommitSuccess"
   />
 </template>
 
@@ -1389,6 +1268,37 @@ const performMerge = async (): Promise<void> => {
   min-width: 0;
   flex: 1;
 }
+
+.merge-status-icon {
+  margin-left: 8px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.merge-status-symbol {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+}
+
+.merge-status-symbol.is-success {
+  color: var(--color-success);
+}
+
+.merge-status-symbol.is-conflict {
+  color: #b08a00;
+}
+
+.merge-status-symbol.is-error {
+  color: var(--color-error);
+}
+
+.merge-status-symbol :deep(svg) {
+  width: 20px;
+  height: 20px;
+}
+
 .panel-bottom-row {
   display: flex;
   align-items: center;
@@ -1396,18 +1306,6 @@ const performMerge = async (): Promise<void> => {
   justify-content: flex-start;
   width: 100%;
   margin-top: 4px;
-}
-/* 提交/冲突 激活样式 */
-.update-btn.commit-active {
-  background: var(--color-success);
-  color: #ffffff;
-  border-color: var(--color-success);
-}
-
-.revert-btn.conflict-active {
-  background: #facc15; /* 黄色 */
-  color: #1f2937;
-  border-color: #f59e0b;
 }
 
 .revert-btn {

@@ -98,7 +98,7 @@ const initEditor = (
 
   // Create diff editor with theme
   diffEditorInstance = monaco.editor.createDiffEditor(container, {
-    readOnly: false,
+    readOnly: true,
     enableSplitViewResizing: true,
     renderSideBySide: true,
     minimap: { enabled: false },
@@ -191,55 +191,6 @@ const loadDiff = async (): Promise<void> => {
   }
 }
 
-const acceptTheirs = async (): Promise<void> => {
-  if (!props.repoPath || !props.filePath) return
-  try {
-    const result = await api.acceptSvnTheirs(props.repoPath, props.filePath)
-    if (result.success) {
-      alert('已接受服务端版本')
-      emit('close')
-    } else {
-      alert(result.message)
-    }
-  } catch (err) {
-    alert('操作失败：' + (err instanceof Error ? err.message : '未知错误'))
-  }
-}
-
-const acceptMine = async (): Promise<void> => {
-  if (!props.repoPath || !props.filePath) return
-  try {
-    const result = await api.acceptSvnMine(props.repoPath, props.filePath)
-    if (result.success) {
-      alert('已保留本地版本')
-      emit('close')
-    } else {
-      alert(result.message)
-    }
-  } catch (err) {
-    alert('操作失败：' + (err instanceof Error ? err.message : '未知错误'))
-  }
-}
-
-const saveMerged = async (): Promise<void> => {
-  if (!props.repoPath || !props.filePath || !modifiedModelInstance) {
-    alert('无法获取修改后的内容')
-    return
-  }
-  try {
-    const content = modifiedModelInstance.getValue()
-    const result = await api.saveSvnFile(props.repoPath, props.filePath, content)
-    if (result.success) {
-      alert('保存成功')
-      emit('close')
-    } else {
-      alert(result.message)
-    }
-  } catch (err) {
-    alert('保存失败：' + (err instanceof Error ? err.message : '未知错误'))
-  }
-}
-
 const handleClose = (): void => {
   cleanupThemeObserver()
   destroyEditor()
@@ -284,17 +235,6 @@ onBeforeUnmount(() => {
           <span class="label">服务端版本 (HEAD)</span>
           <span class="separator">vs</span>
           <span class="label">本地版本 (Working Copy)</span>
-        </div>
-        <div class="toolbar-right">
-          <button class="btn btn-secondary" :disabled="isLoading" @click="acceptTheirs">
-            接受服务端版本
-          </button>
-          <button class="btn btn-secondary" :disabled="isLoading" @click="acceptMine">
-            保留本地版本
-          </button>
-          <button class="btn btn-primary" :disabled="isLoading" @click="saveMerged">
-            保存合并结果
-          </button>
         </div>
       </div>
 
@@ -419,6 +359,9 @@ onBeforeUnmount(() => {
   border-radius: 4px;
   border: 1px solid var(--color-border);
   font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   cursor: pointer;
   transition: all 120ms ease;
 }
@@ -446,6 +389,17 @@ onBeforeUnmount(() => {
 
 .btn-secondary:hover:not(:disabled) {
   background: var(--color-background-hover);
+}
+
+.btn-success {
+  background: var(--color-success);
+  color: white;
+  border-color: var(--color-success);
+}
+
+.btn-success:hover:not(:disabled) {
+  background: #16a34a;
+  border-color: #16a34a;
 }
 
 .editor-wrapper {

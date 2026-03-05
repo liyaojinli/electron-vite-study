@@ -1,7 +1,9 @@
-import { ipcMain, dialog, BrowserWindow } from 'electron'
+import { ipcMain, dialog, BrowserWindow, shell } from 'electron'
 import { execSync } from 'child_process'
+import { exec } from 'child_process'
 import * as path from 'path'
 import * as fs from 'fs'
+import { promisify } from 'util'
 import type { RepositoryData } from '../shared/repository'
 import {
   createRepository,
@@ -17,6 +19,63 @@ import {
   updateLocalRepository,
   verifyLocalRepository
 } from './repository/repository'
+
+const execAsync = promisify(exec)
+
+type ConflictSide = 'left' | 'right'
+
+const getAbsoluteFilePath = (repoPath: string, filePath: string): string => {
+  return path.isAbsolute(filePath) ? filePath : path.join(repoPath, filePath)
+}
+
+const findLatestFileByPrefix = (dirPath: string, prefix: string): string | null => {
+  if (!fs.existsSync(dirPath)) return null
+  const matches = fs
+    .readdirSync(dirPath)
+    .filter((name) => name.startsWith(prefix))
+    .sort()
+  return matches.length > 0 ? matches[matches.length - 1] : null
+}
+
+const resolveConflictTempPaths = (
+  repoPath: string,
+  filePath: string
+): {
+  fullPath: string
+  relativePath: string
+  fileDir: string
+  fileName: string
+  leftPath: string | null
+  rightPath: string | null
+  workingPath: string
+  workingExists: boolean
+} => {
+  const fullPath = getAbsoluteFilePath(repoPath, filePath)
+  const relativePath = path.isAbsolute(filePath) ? path.relative(repoPath, filePath) : filePath
+  const fileDir = path.dirname(fullPath)
+  const fileName = path.basename(fullPath)
+
+  const leftFile = findLatestFileByPrefix(fileDir, `${fileName}.merge-left.r`)
+  const rightFile = findLatestFileByPrefix(fileDir, `${fileName}.merge-right.r`)
+  const exactWorkingPath = path.join(fileDir, `${fileName}.working`)
+  const fallbackWorkingFile = findLatestFileByPrefix(fileDir, `${fileName}.working`)
+  const workingPath = fs.existsSync(exactWorkingPath)
+    ? exactWorkingPath
+    : fallbackWorkingFile
+      ? path.join(fileDir, fallbackWorkingFile)
+      : exactWorkingPath
+
+  return {
+    fullPath,
+    relativePath,
+    fileDir,
+    fileName,
+    leftPath: leftFile ? path.join(fileDir, leftFile) : null,
+    rightPath: rightFile ? path.join(fileDir, rightFile) : null,
+    workingPath,
+    workingExists: fs.existsSync(workingPath)
+  }
+}
 
 // ========== API 定义区（只在这里添加新 API）==========
 export const apiHandlers = {
@@ -74,6 +133,29 @@ export const apiHandlers = {
       return { success: false }
     }
     return { success: true, path: result.filePaths[0] }
+  },
+
+  openLocalDirectory: async (dirPath: string): Promise<{ success: boolean; message: string }> => {
+    try {
+      if (!dirPath || !fs.existsSync(dirPath)) {
+        return { success: false, message: '目录不存在' }
+      }
+
+      const stat = fs.statSync(dirPath)
+      if (!stat.isDirectory()) {
+        return { success: false, message: '目标路径不是目录' }
+      }
+
+      const openResult = await shell.openPath(dirPath)
+      if (openResult) {
+        return { success: false, message: openResult }
+      }
+
+      return { success: true, message: '已打开目录' }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : '打开目录失败'
+      return { success: false, message: errorMsg }
+    }
   },
 
   // Batch Merge APIs
@@ -313,40 +395,86 @@ export const apiHandlers = {
     revision?: string
   ): Promise<{ success: boolean; content: string; message: string }> => {
     try {
-      let cmd: string
-      if (revision) {
-        // Get file content from specific revision
-        // Convert to relative path if absolute
-        const relativePath = path.isAbsolute(filePath)
-          ? path.relative(repoPath, filePath)
-          : filePath
+      // Check if repoPath is a URL (remote) or local path
+      const isUrl = /^(https?|svn):\/\//i.test(repoPath)
 
-        // Get the base URL of the working copy
-        // 判断repoPath是否为本地路径，如果是则直接使用，否则执行svn info获取URL
-        let wcUrl = repoPath
-        if (fs.existsSync(repoPath) && fs.lstatSync(repoPath).isDirectory()) {
-          const infoCmd = `cd "${repoPath}" && svn info --show-item url`
-          wcUrl = execSync(infoCmd, { encoding: 'utf-8' }).trim()
+      if (!revision) {
+        if (isUrl) {
+          // For remote URL without revision, get HEAD
+          const fullUrl = repoPath.endsWith('/') ? repoPath + filePath : `${repoPath}/${filePath}`
+          const cmd = `svn cat "${fullUrl}"`
+          console.log('[getSvnFileContent] Executing:', cmd)
+          const content = execSync(cmd, { encoding: 'utf-8' })
+          return {
+            success: true,
+            content,
+            message: '读取远程文件成功'
+          }
+        } else {
+          // Get local file content
+          const fullPath = path.isAbsolute(filePath) ? filePath : path.join(repoPath, filePath)
+          const content = fs.readFileSync(fullPath, 'utf-8')
+          return {
+            success: true,
+            content,
+            message: '读取本地文件成功'
+          }
         }
+      }
 
-        // Build the full file URL - ensure no double slashes
-        const cleanRelativePath = relativePath.replace(/\\/g, '/').replace(/^\//, '')
-        const fileUrl = `${wcUrl}/${cleanRelativePath}`
-
-        // For deleted files, we need to use peg revision with the URL
-        cmd = `svn cat "${fileUrl}"@${revision}`
-      } else {
-        // Get local file content
-        // Check if filePath is already absolute, if not, join with repoPath
+      // For conflict resolution, support special version keywords (only for local paths)
+      if (!isUrl && (revision === 'WORKING' || revision === 'MINE')) {
+        // Get the working copy version (same as no revision)
         const fullPath = path.isAbsolute(filePath) ? filePath : path.join(repoPath, filePath)
         const content = fs.readFileSync(fullPath, 'utf-8')
         return {
           success: true,
           content,
-          message: '读取本地文件成功'
+          message: '读取本地工作副本成功'
         }
       }
+      
+      if (!isUrl && revision === 'THEIRS') {
+        // For conflicts, try to find the merge-right file (theirs version)
+        const fullPath = path.isAbsolute(filePath) ? filePath : path.join(repoPath, filePath)
+        const fileName = path.basename(fullPath)
+        const fileDir = path.dirname(fullPath)
+        
+        // Look for conflict files
+        if (fs.existsSync(fileDir)) {
+          const files = fs.readdirSync(fileDir)
+          const mergeRightFile = files.find((f) => f.startsWith(fileName + '.merge-right.r'))
+          
+          if (mergeRightFile) {
+            const mergeRightPath = path.join(fileDir, mergeRightFile)
+            const content = fs.readFileSync(mergeRightPath, 'utf-8')
+            return {
+              success: true,
+              content,
+              message: '读取服务端版本成功'
+            }
+          }
+        }
+        
+        // Fallback: use HEAD revision
+        revision = 'HEAD'
+      }
 
+      // For BASE, HEAD or numeric revisions
+      let cmd: string
+      if (isUrl) {
+        // For remote URL, use full URL with file path
+        const fullUrl = repoPath.endsWith('/') ? repoPath + filePath : `${repoPath}/${filePath}`
+        cmd = `svn cat -r ${revision} "${fullUrl}"`
+      } else {
+        // For local working copy, use cd + relative path
+        const relativePath = path.isAbsolute(filePath)
+          ? path.relative(repoPath, filePath)
+          : filePath
+        cmd = `cd "${repoPath}" && svn cat -r ${revision} "${relativePath}"`
+      }
+      
+      console.log('[getSvnFileContent] Executing:', cmd)
       const output = execSync(cmd, { encoding: 'utf-8' })
 
       return {
@@ -354,12 +482,14 @@ export const apiHandlers = {
         content: output,
         message: '获取文件内容成功'
       }
-    } catch {
-      // Silently return empty content for deleted/non-existent files
+    } catch (error) {
+      // Return error with details
+      const errorMsg = error instanceof Error ? error.message : '未知错误'
+      console.error('[getSvnFileContent] Error:', errorMsg, 'revision:', revision)
       return {
         success: false,
         content: '',
-        message: '文件不存在或已删除'
+        message: `获取文件内容失败: ${errorMsg}`
       }
     }
   },
@@ -369,13 +499,16 @@ export const apiHandlers = {
     filePath: string
   ): Promise<{ success: boolean; message: string }> => {
     try {
-      // Check if filePath is absolute
-      const absolutePath = path.isAbsolute(filePath) ? filePath : path.join(repoPath, filePath)
-      // Convert to relative path for svn command
-      const relativePath = path.isAbsolute(filePath) ? path.relative(repoPath, filePath) : filePath
-      const cmd = `cd "${repoPath}" && svn cat "${relativePath}" > "${absolutePath}"`
-      console.log('[acceptSvnTheirs] Executing:', cmd)
-      execSync(cmd, { encoding: 'utf-8' })
+      const tempPaths = resolveConflictTempPaths(repoPath, filePath)
+      if (!tempPaths.rightPath) {
+        return {
+          success: false,
+          message: '未找到服务端临时文件(.merge-right.r*)'
+        }
+      }
+
+      const content = fs.readFileSync(tempPaths.rightPath, 'utf-8')
+      fs.writeFileSync(tempPaths.fullPath, content, 'utf-8')
 
       return {
         success: true,
@@ -396,12 +529,16 @@ export const apiHandlers = {
     filePath: string
   ): Promise<{ success: boolean; message: string }> => {
     try {
-      // Convert to relative path if absolute
-      const relativePath = path.isAbsolute(filePath) ? path.relative(repoPath, filePath) : filePath
-      // Mark the conflict as resolved, keeping local version
-      const cmd = `cd "${repoPath}" && svn resolve --accept mine-full "${relativePath}"`
-      console.log('[acceptSvnMine] Executing:', cmd)
-      execSync(cmd, { encoding: 'utf-8' })
+      const tempPaths = resolveConflictTempPaths(repoPath, filePath)
+      if (!tempPaths.leftPath) {
+        return {
+          success: false,
+          message: '未找到本地临时文件(.merge-left.r*)'
+        }
+      }
+
+      const content = fs.readFileSync(tempPaths.leftPath, 'utf-8')
+      fs.writeFileSync(tempPaths.fullPath, content, 'utf-8')
 
       return {
         success: true,
@@ -437,6 +574,215 @@ export const apiHandlers = {
       return {
         success: false,
         message: `文件保存失败: ${errorMsg}`
+      }
+    }
+  },
+
+  getSvnConflictTempContents: async (
+    repoPath: string,
+    filePath: string
+  ): Promise<{
+    success: boolean
+    message: string
+    localContent: string
+    serverContent: string
+    workingContent: string
+  }> => {
+    try {
+      const tempPaths = resolveConflictTempPaths(repoPath, filePath)
+      if (!tempPaths.leftPath || !tempPaths.rightPath) {
+        return {
+          success: false,
+          message: '未找到冲突临时文件，请确认当前文件处于冲突状态',
+          localContent: '',
+          serverContent: '',
+          workingContent: ''
+        }
+      }
+
+      const localContent = fs.readFileSync(tempPaths.leftPath, 'utf-8')
+      const serverContent = fs.readFileSync(tempPaths.rightPath, 'utf-8')
+      const workingContent = tempPaths.workingExists
+        ? fs.readFileSync(tempPaths.workingPath, 'utf-8')
+        : fs.readFileSync(tempPaths.fullPath, 'utf-8')
+
+      return {
+        success: true,
+        message: '读取冲突临时文件成功',
+        localContent,
+        serverContent,
+        workingContent
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : '读取冲突临时文件失败'
+      return {
+        success: false,
+        message: `读取冲突临时文件失败: ${errorMsg}`,
+        localContent: '',
+        serverContent: '',
+        workingContent: ''
+      }
+    }
+  },
+
+  saveSvnConflictWorkingFile: async (
+    repoPath: string,
+    filePath: string,
+    content: string
+  ): Promise<{ success: boolean; message: string }> => {
+    try {
+      const tempPaths = resolveConflictTempPaths(repoPath, filePath)
+      fs.writeFileSync(tempPaths.workingPath, content, 'utf-8')
+      return {
+        success: true,
+        message: 'working 文件保存成功'
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'working 文件保存失败'
+      return {
+        success: false,
+        message: `working 文件保存失败: ${errorMsg}`
+      }
+    }
+  },
+
+  setSvnConflictWorkingFromSide: async (
+    repoPath: string,
+    filePath: string,
+    side: ConflictSide
+  ): Promise<{ success: boolean; message: string; workingContent: string }> => {
+    try {
+      const tempPaths = resolveConflictTempPaths(repoPath, filePath)
+      const sourcePath = side === 'right' ? tempPaths.rightPath : tempPaths.leftPath
+      if (!sourcePath) {
+        return {
+          success: false,
+          message:
+            side === 'right'
+              ? '未找到服务端临时文件(.merge-right.r*)'
+              : '未找到本地临时文件(.merge-left.r*)',
+          workingContent: ''
+        }
+      }
+
+      const sourceContent = fs.readFileSync(sourcePath, 'utf-8')
+      fs.writeFileSync(tempPaths.workingPath, sourceContent, 'utf-8')
+
+      return {
+        success: true,
+        message: side === 'right' ? '已将服务端版本写入 working' : '已将本地版本写入 working',
+        workingContent: sourceContent
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : '写入 working 失败'
+      return {
+        success: false,
+        message: `写入 working 失败: ${errorMsg}`,
+        workingContent: ''
+      }
+    }
+  },
+
+  resolveSvnConflictUsingWorking: async (
+    repoPath: string,
+    filePath: string,
+    workingContent: string
+  ): Promise<{ success: boolean; message: string }> => {
+    try {
+      const tempPaths = resolveConflictTempPaths(repoPath, filePath)
+
+      // Persist editor result into working temp file and real file.
+      fs.writeFileSync(tempPaths.workingPath, workingContent, 'utf-8')
+      fs.writeFileSync(tempPaths.fullPath, workingContent, 'utf-8')
+
+      const cmd = `cd "${repoPath}" && svn resolve --accept working "${tempPaths.relativePath}"`
+      execSync(cmd, { encoding: 'utf-8' })
+
+      const cleanupTargets = [
+        tempPaths.workingPath,
+        tempPaths.leftPath,
+        tempPaths.rightPath
+      ].filter((p): p is string => Boolean(p))
+      for (const tempFile of cleanupTargets) {
+        if (fs.existsSync(tempFile)) {
+          fs.unlinkSync(tempFile)
+        }
+      }
+
+      return {
+        success: true,
+        message: '冲突已解决并清理临时文件'
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : '解决冲突失败'
+      return {
+        success: false,
+        message: `解决冲突失败: ${errorMsg}`
+      }
+    }
+  },
+
+  markSvnResolved: async (
+    repoPath: string,
+    filePath: string
+  ): Promise<{ success: boolean; message: string }> => {
+    try {
+      // Convert to relative path if absolute
+      const relativePath = path.isAbsolute(filePath) ? path.relative(repoPath, filePath) : filePath
+      // Mark the conflict as resolved with the working copy version
+      const cmd = `cd "${repoPath}" && svn resolve --accept working "${relativePath}"`
+      console.log('[markSvnResolved] Executing:', cmd)
+      execSync(cmd, { encoding: 'utf-8' })
+
+      return {
+        success: true,
+        message: '已标记为已解决冲突'
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : '标记为已解决失败'
+      console.error('[markSvnResolved] Error:', errorMsg)
+      return {
+        success: false,
+        message: `标记为已解决失败: ${errorMsg}`
+      }
+    }
+  },
+
+  svnCommit: async (
+    repoPath: string,
+    message: string,
+    username?: string,
+    password?: string
+  ): Promise<{ success: boolean; message: string; output?: string }> => {
+    try {
+      // Escape shell special characters in message
+      const escapedMessage = message.replace(/"/g, '\\"')
+      
+      // Build svn commit command
+      let cmd = `cd "${repoPath}" && svn commit -m "${escapedMessage}"`
+      
+      // Add authentication if provided
+      if (username && password) {
+        cmd += ` --username "${username}" --password "${password}" --non-interactive --no-auth-cache`
+      }
+      
+      console.log('[svnCommit] Executing commit for:', repoPath)
+      
+      const output = execSync(cmd, { encoding: 'utf-8' })
+      console.log('[svnCommit] Output:', output)
+
+      return {
+        success: true,
+        message: '提交成功',
+        output
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : '提交失败'
+      console.error('[svnCommit] Error:', errorMsg)
+      return {
+        success: false,
+        message: `提交失败: ${errorMsg}`,
+        output: errorMsg
       }
     }
   },
@@ -497,46 +843,157 @@ export const apiHandlers = {
       output?: string
     }>
   > => {
-    const results: Array<{
+    const sortedRevisions = Array.from(new Set(revisions)).sort((a, b) => a - b)
+    if (sortedRevisions.length === 0) {
+      throw new Error('未指定需要合并的版本')
+    }
+
+    const mergeOneRepo = async (
+      targetRepo: RepositoryData
+    ): Promise<{
       targetRepoName: string
       targetRepoUrl: string
       success: boolean
       message: string
       output?: string
-    }> = []
-    for (const targetRepo of targetRepos) {
+    }> => {
       try {
-        // 先排序，去重
-        const sortedRevisions = Array.from(new Set(revisions)).sort((a, b) => a - b)
-        if (sortedRevisions.length === 0) throw new Error('未指定需要合并的版本')
-        // 使用-c参数批量合并多个不连续的提交
         const revStr = sortedRevisions.join(',')
         const mergeCmd = `svn merge --accept=postpone -c ${revStr} "${sourceRepo.url}" "${targetRepo.url}"`
-        const output = execSync(mergeCmd, {
-          encoding: 'utf-8',
-          cwd: targetRepo.url
+        const { stdout, stderr } = await execAsync(mergeCmd, {
+          cwd: targetRepo.url,
+          maxBuffer: 10 * 1024 * 1024
         })
-        // 检查是否有冲突文件（C开头的行）
-        const hasConflict = output.split('\n').some((line) => line.trim().startsWith('C'))
-        results.push({
+
+        const output = `${stdout || ''}${stderr || ''}`.trim()
+        const hasConflict = output
+          .split('\n')
+          .some((line) => line.trim().startsWith('C') || line.toLowerCase().includes('conflict'))
+
+        // 成功执行merge命令，无论是否有冲突都返回success=true
+        return {
           targetRepoName: targetRepo.alias,
           targetRepoUrl: targetRepo.url,
-          success: !hasConflict,
+          success: true,
           message: hasConflict ? '合并冲突' : '合并成功',
           output
-        })
+        }
       } catch (error) {
-        results.push({
+        let hasConflict = false
+        try {
+          const statusResult = await apiHandlers.getSvnStatus(targetRepo.url)
+          hasConflict = statusResult.files.some((f) => f.status === 'C')
+        } catch {
+          // Ignore status read failure and fallback to merge error.
+        }
+
+        if (hasConflict) {
+          return {
+            targetRepoName: targetRepo.alias,
+            targetRepoUrl: targetRepo.url,
+            success: true,
+            message: '合并冲突',
+            output: error instanceof Error ? error.message : String(error)
+          }
+        }
+
+        return {
           targetRepoName: targetRepo.alias,
           targetRepoUrl: targetRepo.url,
           success: false,
           message: `合并失败: ${error instanceof Error ? error.message : '未知错误'}`,
           output: error instanceof Error ? error.message : undefined
-        })
+        }
       }
     }
 
-    return results
+    return Promise.all(targetRepos.map((repo) => mergeOneRepo(repo)))
+  },
+
+  performSingleMerge: async (
+    sourceRepo: RepositoryData,
+    targetRepo: RepositoryData,
+    revisions: number[]
+  ): Promise<{
+    targetRepoName: string
+    targetRepoUrl: string
+    targetRepoPath?: string
+    success: boolean
+    message: string
+    files?: string[]
+    output?: string
+  }> => {
+    const sortedRevisions = Array.from(new Set(revisions)).sort((a, b) => a - b)
+    if (sortedRevisions.length === 0) {
+      throw new Error('未指定需要合并的版本')
+    }
+
+    try {
+      const revStr = sortedRevisions.join(',')
+      const mergeCmd = `svn merge --accept=postpone -c ${revStr} "${sourceRepo.url}" "${targetRepo.url}"`
+      const { stdout, stderr } = await execAsync(mergeCmd, {
+        cwd: targetRepo.url,
+        maxBuffer: 10 * 1024 * 1024
+      })
+
+      const output = `${stdout || ''}${stderr || ''}`.trim()
+      const hasConflict = output
+        .split('\n')
+        .some((line) => line.trim().startsWith('C') || line.toLowerCase().includes('conflict'))
+
+      // 获取受影响的文件列表
+      const statusResult = await apiHandlers.getSvnStatus(targetRepo.url)
+      const affectedFiles = statusResult.files
+        .map((f) => `${f.status}  ${f.path}`)
+        .filter((f) => ['C', 'M', 'A', 'D', 'R'].some((st) => f.startsWith(st)))
+
+      // 成功执行merge命令，无论是否有冲突都返回success=true
+      // 前端通过files中是否有'C'开头的文件来判断是否有冲突
+      return {
+        targetRepoName: targetRepo.alias,
+        targetRepoUrl: targetRepo.url,
+        targetRepoPath: targetRepo.url,
+        success: true,
+        message: hasConflict ? '合并冲突' : '合并成功',
+        files: affectedFiles,
+        output
+      }
+    } catch (error) {
+      // 即使出错，也尝试获取文件列表
+      let affectedFiles: string[] = []
+      let hasConflict = false
+      try {
+        const statusResult = await apiHandlers.getSvnStatus(targetRepo.url)
+        affectedFiles = statusResult.files
+          .map((f) => `${f.status}  ${f.path}`)
+          .filter((f) => ['C', 'M', 'A', 'D', 'R'].some((st) => f.startsWith(st)))
+        hasConflict = statusResult.files.some((f) => f.status === 'C')
+      } catch {
+        // 忽略 getSvnStatus 的错误，继续返回merge错误
+      }
+
+      if (hasConflict) {
+        return {
+          targetRepoName: targetRepo.alias,
+          targetRepoUrl: targetRepo.url,
+          targetRepoPath: targetRepo.url,
+          success: true,
+          message: '合并冲突',
+          files: affectedFiles,
+          output: error instanceof Error ? error.message : String(error)
+        }
+      }
+
+      return {
+        targetRepoName: targetRepo.alias,
+        targetRepoUrl: targetRepo.url,
+        targetRepoPath: targetRepo.url,
+        success: false,
+        message: `合并失败: ${error instanceof Error ? error.message : '未知错误'}`,
+        files: affectedFiles,
+        output: error instanceof Error ? error.message : undefined
+      }
+    }
   }
 }
 
