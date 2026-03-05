@@ -62,6 +62,45 @@
               </span>
             </div>
             <div v-if="isPanelExpanded(result)" class="result-panel-body">
+              <!-- 版本进度信息 -->
+              <div
+                v-if="result.revisions && result.revisions.length > 1"
+                class="revisions-progress"
+              >
+                <div class="revisions-title">版本进度:</div>
+                <div class="revisions-list">
+                  <div
+                    v-for="(rev, index) in result.revisions"
+                    :key="rev.revision"
+                    :class="[
+                      'revision-item',
+                      `revision-${rev.status}`,
+                      {
+                        'is-current': index === result.currentRevisionIndex,
+                        'is-resolved':
+                          rev.status === 'conflict' &&
+                          isRevisionConflictResolved(rev, result.targetRepoPath)
+                      }
+                    ]"
+                  >
+                    <span class="revision-number">r{{ rev.revision }}</span>
+                    <span class="revision-status">
+                      {{
+                        getEffectiveRevisionStatus(
+                          rev,
+                          result.targetRepoPath,
+                          index,
+                          result.revisions
+                        )
+                      }}
+                    </span>
+                    <span v-if="index === result.currentRevisionIndex" class="current-indicator">
+                      ← 当前
+                    </span>
+                  </div>
+                </div>
+              </div>
+              
               <div v-if="result.files && result.files.length" class="file-list">
                 <a
                   v-for="file in result.files"
@@ -151,15 +190,30 @@ import { LoaderCircle } from 'lucide-vue-next'
 import SvnConflictMerge from './SvnConflictMerge.vue'
 import SvnDiffViewerReadOnly from './SvnDiffViewerReadOnly.vue'
 
-interface MergeResultPanel {
+// 单个版本的 merge 状态
+interface RevisionMergeState {
+  revision: number
+  status: 'pending' | 'merging' | 'success' | 'conflict' | 'failed'
+  files?: string[]
+  message?: string
+}
+
+// 单个仓库的 merge 会话状态
+interface MergeSessionResult {
   targetRepoName: string
-  targetRepoPath?: string
+  targetRepoUrl: string
+  targetRepoPath: string
+  sourceRepoUrl: string
+  revisions: RevisionMergeState[]
+  currentRevisionIndex: number
+  allCompleted: boolean
   success: boolean
-  files: string[]
+  message: string
+  files?: string[]
   isMerging?: boolean
 }
 
-const getResultStatusClass = (result: MergeResultPanel): string => {
+const getResultStatusClass = (result: MergeSessionResult): string => {
   if (result.isMerging) return 'merging'
   if (result.success) {
     return hasUnresolvedConflicts(result) ? 'conflict' : 'success'
@@ -167,23 +221,31 @@ const getResultStatusClass = (result: MergeResultPanel): string => {
   return 'error'
 }
 
-const getResultStatusText = (result: MergeResultPanel): string => {
+const getResultStatusText = (result: MergeSessionResult): string => {
   if (result.isMerging) return '合并中'
-  if (result.success) {
-    return hasUnresolvedConflicts(result) ? '合并冲突' : '合并成功'
+  if (result.allCompleted) {
+    // 检查是否有未解决的冲突
+    const hasUnresolved = result.revisions.some(
+      (r) => r.status === 'conflict' && !isRevisionConflictResolved(r, result.targetRepoPath)
+    )
+    return hasUnresolved ? '部分冲突' : '合并成功'
   }
-  return '合并失败'
+  // 显示进度
+  const completedCount = result.revisions.filter(
+    (r) => r.status === 'success' || r.status === 'conflict' || r.status === 'failed'
+  ).length
+  return `进行中 (${completedCount}/${result.revisions.length})`
 }
 
 const props = defineProps<{
   visible: boolean
-  results: MergeResultPanel[]
+  results: MergeSessionResult[]
   isLoading: boolean
   sourceRepoUrl?: string
   selectedRevisions?: number[]
 }>()
 
-const emit = defineEmits(['close', 'refresh', 'commit-success'])
+const emit = defineEmits(['close', 'refresh', 'commit-success', 'update-result'])
 
 const api = window.api
 const commitUsername = ref('')
@@ -218,7 +280,8 @@ watch(
 const canCommit = computed(() => {
   const hasMessage = commitMessage.value.trim() !== ''
   const hasValidRepos = props.results.some((r) => r.success && r.targetRepoPath)
-  return hasMessage && hasValidRepos
+  const hasNoConflicts = props.results.every((r) => !hasUnresolvedConflicts(r))
+  return hasMessage && hasValidRepos && hasNoConflicts
 })
 
 const conflictMergeVisible = ref(false)
@@ -229,16 +292,16 @@ const diffViewerBaseRevision = ref(0)
 const diffViewerTargetRevision = ref(0)
 const panelExpandedState = ref<Record<string, boolean>>({})
 
-const getPanelKey = (result: MergeResultPanel): string => {
+const getPanelKey = (result: MergeSessionResult): string => {
   return `${result.targetRepoName}::${result.targetRepoPath || ''}`
 }
 
-const isPanelExpanded = (result: MergeResultPanel): boolean => {
+const isPanelExpanded = (result: MergeSessionResult): boolean => {
   const key = getPanelKey(result)
   return panelExpandedState.value[key] ?? false
 }
 
-const togglePanel = (result: MergeResultPanel): void => {
+const togglePanel = (result: MergeSessionResult): void => {
   const key = getPanelKey(result)
   panelExpandedState.value = {
     ...panelExpandedState.value,
@@ -285,7 +348,7 @@ const getEffectiveFileStatus = (fileEntry: string, repoPath?: string): string =>
   return isConflictResolved(repoPath, filePath) ? 'M' : 'C'
 }
 
-const hasUnresolvedConflicts = (result: MergeResultPanel): boolean => {
+const hasUnresolvedConflicts = (result: MergeSessionResult): boolean => {
   if (!result.files || !result.targetRepoPath) return false
   return result.files.some(
     (fileEntry) => getEffectiveFileStatus(fileEntry, result.targetRepoPath) === 'C'
@@ -305,7 +368,7 @@ const isConflict = (fileEntry: string, repoPath?: string): boolean => {
   return getEffectiveFileStatus(fileEntry, repoPath) === 'C'
 }
 
-const handleFileClick = (result: MergeResultPanel, fileEntry: string): void => {
+const handleFileClick = (result: MergeSessionResult, fileEntry: string): void => {
   const filePath = parseFilePath(fileEntry, result.targetRepoPath)
   // We need the repo path. It might be stored in result.targetRepoPath
   // If not available, we'll need to find it from the repository list
@@ -357,10 +420,52 @@ const handleConflictMergeClose = (): void => {
 }
 
 // 处理冲突解决
-const handleConflictResolved = (): void => {
+const handleConflictResolved = async (): Promise<void> => {
   if (selectedRepoPath.value && selectedFilePath.value) {
     const key = `${selectedRepoPath.value}::${selectedFilePath.value}`
     resolvedConflicts.value.add(key)
+
+    // 查找当前仓库的 merge session
+    const currentResult = props.results.find((r) => r.targetRepoPath === selectedRepoPath.value)
+
+    if (currentResult) {
+      // 检查该仓库是否还有未解决的冲突
+      const hasRemainingConflicts = currentResult.files?.some((fileEntry) => {
+        const filePath = parseFilePath(fileEntry, currentResult.targetRepoPath)
+        const effectiveStatus = getEffectiveFileStatus(fileEntry, currentResult.targetRepoPath)
+        return (
+          effectiveStatus === 'C' && !isConflictResolved(currentResult.targetRepoPath, filePath)
+        )
+      })
+
+      // 如果当前版本的所有冲突都已解决，且还有待处理的版本，自动继续 merge
+      if (
+        !hasRemainingConflicts &&
+        !currentResult.allCompleted &&
+        currentResult.currentRevisionIndex >= 0
+      ) {
+        console.log('[MergeProgressDialog] 所有冲突已解决，自动继续下一个版本的 merge')
+        try {
+          // 将 Vue 响应式对象转换为纯对象，避免 IPC 克隆错误
+          const plainSession = JSON.parse(JSON.stringify(currentResult))
+          
+          const updatedResult = await api.mergeNextRevision(
+            currentResult.sourceRepoUrl,
+            currentResult.targetRepoPath,
+            plainSession
+          )
+          
+          // 通知父组件更新结果
+          emit('update-result', updatedResult)
+          
+          // 刷新显示
+          emit('refresh')
+        } catch (error) {
+          console.error('[MergeProgressDialog] 继续 merge 失败:', error)
+          alert(`继续合并失败: ${error instanceof Error ? error.message : '未知错误'}`)
+        }
+      }
+    }
   }
 }
 
@@ -368,6 +473,56 @@ const handleConflictResolved = (): void => {
 const isConflictResolved = (repoPath: string, filePath: string): boolean => {
   const key = `${repoPath}::${filePath}`
   return resolvedConflicts.value.has(key)
+}
+
+// 检查某个版本的所有冲突是否都已解决
+const isRevisionConflictResolved = (revision: RevisionMergeState, repoPath: string): boolean => {
+  if (revision.status !== 'conflict') return false
+  if (!revision.files || revision.files.length === 0) return false
+  
+  // 检查该版本的所有冲突文件是否都已解决
+  const conflictFiles = revision.files.filter((f) => f.startsWith('C'))
+  if (conflictFiles.length === 0) return false
+  
+  return conflictFiles.every((fileEntry) => {
+    const filePath = parseFilePath(fileEntry, repoPath)
+    return isConflictResolved(repoPath, filePath)
+  })
+}
+
+// 获取版本的有效状态（考虑已解决的冲突）
+const getEffectiveRevisionStatus = (
+  revision: RevisionMergeState,
+  repoPath: string,
+  index: number,
+  revisions: RevisionMergeState[]
+): string => {
+  if (revision.status === 'conflict' && isRevisionConflictResolved(revision, repoPath)) {
+    return '冲突已解决'
+  }
+  
+  // 非 pending 状态直接返回对应文本
+  if (revision.status !== 'pending') {
+    return revision.status === 'merging'
+      ? '合并中...'
+      : revision.status === 'success'
+        ? '成功'
+        : revision.status === 'conflict'
+          ? '冲突'
+          : '失败'
+  }
+  
+  // pending 状态：检查上一个版本是否有冲突
+  if (index > 0) {
+    const prevRevision = revisions[index - 1]
+    if (prevRevision.status === 'conflict') {
+      // 上一个版本有冲突，提示待解决
+      return '待解决上一条提交记录的冲突'
+    }
+  }
+  
+  // 其他情况（第一条或上一条是成功/失败），显示待处理
+  return '待处理'
 }
 
 const handleCommit = async (): Promise<void> => {
@@ -526,6 +681,81 @@ const handleCommit = async (): Promise<void> => {
 .result-panel-body {
   padding: 8px 12px;
 }
+
+.revisions-progress {
+  margin-bottom: 12px;
+  padding: 8px;
+  background: var(--color-background-secondary);
+  border-radius: 4px;
+}
+
+.revisions-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  margin-bottom: 6px;
+}
+
+.revisions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.revision-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-family: monospace;
+}
+
+.revision-item.is-current {
+  background: var(--color-background-hover);
+  font-weight: 600;
+}
+
+.revision-number {
+  min-width: 60px;
+  color: var(--color-text-primary);
+}
+
+.revision-status {
+  min-width: 70px;
+}
+
+.revision-pending {
+  color: var(--color-primary);
+}
+
+.revision-merging {
+  color: var(--color-primary);
+}
+
+.revision-success {
+  color: var(--color-success);
+}
+
+.revision-conflict {
+  color: #eab308;
+}
+
+.revision-item.is-resolved .revision-status {
+  color: var(--color-success);
+}
+
+.revision-failed {
+  color: var(--color-error);
+}
+
+.current-indicator {
+  margin-left: auto;
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
 .file-list {
   display: flex;
   flex-direction: column;

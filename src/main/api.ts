@@ -24,6 +24,29 @@ const execAsync = promisify(exec)
 
 type ConflictSide = 'left' | 'right'
 
+// 单个版本的 merge 状态
+export interface RevisionMergeState {
+  revision: number
+  status: 'pending' | 'merging' | 'success' | 'conflict' | 'failed'
+  files?: string[] // 受影响的文件列表（格式：'C  path/to/file'）
+  message?: string
+}
+
+// 单个仓库的 merge 会话状态
+export interface MergeSessionResult {
+  targetRepoName: string
+  targetRepoUrl: string
+  targetRepoPath: string
+  sourceRepoUrl: string
+  revisions: RevisionMergeState[]
+  currentRevisionIndex: number // 当前正在处理的版本索引（-1表示全部完成）
+  allCompleted: boolean // 所有版本是否都已完成
+  success: boolean // 整体是否成功（无失败的版本）
+  message: string
+  files?: string[] // 当前所有受影响的文件（累积）
+  isMerging?: boolean // 是否正在 merge 中
+}
+
 const getAbsoluteFilePath = (repoPath: string, filePath: string): string => {
   return path.isAbsolute(filePath) ? filePath : path.join(repoPath, filePath)
 }
@@ -834,166 +857,301 @@ export const apiHandlers = {
     sourceRepo: RepositoryData,
     targetRepos: RepositoryData[],
     revisions: number[]
-  ): Promise<
-    Array<{
-      targetRepoName: string
-      targetRepoUrl: string
-      success: boolean
-      message: string
-      output?: string
-    }>
-  > => {
+  ): Promise<MergeSessionResult[]> => {
     const sortedRevisions = Array.from(new Set(revisions)).sort((a, b) => a - b)
     if (sortedRevisions.length === 0) {
       throw new Error('未指定需要合并的版本')
     }
 
-    const mergeOneRepo = async (
-      targetRepo: RepositoryData
-    ): Promise<{
-      targetRepoName: string
-      targetRepoUrl: string
-      success: boolean
-      message: string
-      output?: string
-    }> => {
-      try {
-        const revStr = sortedRevisions.join(',')
-        const mergeCmd = `svn merge --accept=postpone -c ${revStr} "${sourceRepo.url}" "${targetRepo.url}"`
-        const { stdout, stderr } = await execAsync(mergeCmd, {
-          cwd: targetRepo.url,
-          maxBuffer: 10 * 1024 * 1024
-        })
-
-        const output = `${stdout || ''}${stderr || ''}`.trim()
-        const hasConflict = output
-          .split('\n')
-          .some((line) => line.trim().startsWith('C') || line.toLowerCase().includes('conflict'))
-
-        // 成功执行merge命令，无论是否有冲突都返回success=true
-        return {
-          targetRepoName: targetRepo.alias,
-          targetRepoUrl: targetRepo.url,
-          success: true,
-          message: hasConflict ? '合并冲突' : '合并成功',
-          output
-        }
-      } catch (error) {
-        let hasConflict = false
-        try {
-          const statusResult = await apiHandlers.getSvnStatus(targetRepo.url)
-          hasConflict = statusResult.files.some((f) => f.status === 'C')
-        } catch {
-          // Ignore status read failure and fallback to merge error.
-        }
-
-        if (hasConflict) {
-          return {
-            targetRepoName: targetRepo.alias,
-            targetRepoUrl: targetRepo.url,
-            success: true,
-            message: '合并冲突',
-            output: error instanceof Error ? error.message : String(error)
-          }
-        }
-
-        return {
-          targetRepoName: targetRepo.alias,
-          targetRepoUrl: targetRepo.url,
-          success: false,
-          message: `合并失败: ${error instanceof Error ? error.message : '未知错误'}`,
-          output: error instanceof Error ? error.message : undefined
-        }
-      }
-    }
-
-    return Promise.all(targetRepos.map((repo) => mergeOneRepo(repo)))
+    // 对每个仓库执行 performSingleMerge（并行）
+    return Promise.all(
+      targetRepos.map((repo) => apiHandlers.performSingleMerge(sourceRepo, repo, sortedRevisions))
+    )
   },
 
   performSingleMerge: async (
     sourceRepo: RepositoryData,
     targetRepo: RepositoryData,
     revisions: number[]
-  ): Promise<{
-    targetRepoName: string
-    targetRepoUrl: string
-    targetRepoPath?: string
-    success: boolean
-    message: string
-    files?: string[]
-    output?: string
-  }> => {
+  ): Promise<MergeSessionResult> => {
     const sortedRevisions = Array.from(new Set(revisions)).sort((a, b) => a - b)
     if (sortedRevisions.length === 0) {
       throw new Error('未指定需要合并的版本')
     }
 
-    try {
-      const revStr = sortedRevisions.join(',')
-      const mergeCmd = `svn merge --accept=postpone -c ${revStr} "${sourceRepo.url}" "${targetRepo.url}"`
-      const { stdout, stderr } = await execAsync(mergeCmd, {
-        cwd: targetRepo.url,
-        maxBuffer: 10 * 1024 * 1024
-      })
+    // 初始化所有版本状态为 pending
+    const revisionStates: RevisionMergeState[] = sortedRevisions.map((rev) => ({
+      revision: rev,
+      status: 'pending',
+      files: [],
+      message: ''
+    }))
 
-      const output = `${stdout || ''}${stderr || ''}`.trim()
-      const hasConflict = output
-        .split('\n')
-        .some((line) => line.trim().startsWith('C') || line.toLowerCase().includes('conflict'))
+    // 循环处理版本，直到遇到冲突或失败才停止并返回
+    let currentIndex = 0
+    while (currentIndex < revisionStates.length) {
+      const currentRevision = sortedRevisions[currentIndex]
+      revisionStates[currentIndex].status = 'merging'
 
-      // 获取受影响的文件列表
-      const statusResult = await apiHandlers.getSvnStatus(targetRepo.url)
-      const affectedFiles = statusResult.files
-        .map((f) => `${f.status}  ${f.path}`)
-        .filter((f) => ['C', 'M', 'A', 'D', 'R'].some((st) => f.startsWith(st)))
-
-      // 成功执行merge命令，无论是否有冲突都返回success=true
-      // 前端通过files中是否有'C'开头的文件来判断是否有冲突
-      return {
-        targetRepoName: targetRepo.alias,
-        targetRepoUrl: targetRepo.url,
-        targetRepoPath: targetRepo.url,
-        success: true,
-        message: hasConflict ? '合并冲突' : '合并成功',
-        files: affectedFiles,
-        output
-      }
-    } catch (error) {
-      // 即使出错，也尝试获取文件列表
-      let affectedFiles: string[] = []
-      let hasConflict = false
       try {
+        const mergeCmd = `svn merge --accept=postpone -c ${currentRevision} "${sourceRepo.url}" "${targetRepo.url}"`
+        await execAsync(mergeCmd, {
+          cwd: targetRepo.url,
+          maxBuffer: 10 * 1024 * 1024
+        })
+
+        // 获取受影响的文件列表
         const statusResult = await apiHandlers.getSvnStatus(targetRepo.url)
-        affectedFiles = statusResult.files
+        const affectedFiles = statusResult.files
           .map((f) => `${f.status}  ${f.path}`)
           .filter((f) => ['C', 'M', 'A', 'D', 'R'].some((st) => f.startsWith(st)))
-        hasConflict = statusResult.files.some((f) => f.status === 'C')
-      } catch {
-        // 忽略 getSvnStatus 的错误，继续返回merge错误
-      }
 
-      if (hasConflict) {
+        const hasConflict = statusResult.files.some((f) => f.status === 'C')
+
+        // 更新当前版本的状态
+        revisionStates[currentIndex].status = hasConflict ? 'conflict' : 'success'
+        revisionStates[currentIndex].files = affectedFiles
+        revisionStates[currentIndex].message = hasConflict ? '合并冲突' : '合并成功'
+
+        // 累积所有文件
+        const allFiles = new Set<string>()
+        revisionStates.forEach((rev) => {
+          rev.files?.forEach((f) => allFiles.add(f))
+        })
+
+        // 如果有冲突，停止并返回
+        if (hasConflict) {
+          return {
+            targetRepoName: targetRepo.alias,
+            targetRepoUrl: targetRepo.url,
+            targetRepoPath: targetRepo.url,
+            sourceRepoUrl: sourceRepo.url,
+            revisions: revisionStates,
+            currentRevisionIndex: currentIndex,
+            allCompleted: false,
+            success: true,
+            message: `版本 r${currentRevision} 合并冲突`,
+            files: Array.from(allFiles),
+            isMerging: false
+          }
+        }
+
+        // 成功，继续处理下一个版本
+        currentIndex++
+      } catch (error) {
+        // 即使出错，也尝试获取文件列表
+        let affectedFiles: string[] = []
+        let hasConflict = false
+        try {
+          const statusResult = await apiHandlers.getSvnStatus(targetRepo.url)
+          affectedFiles = statusResult.files
+            .map((f) => `${f.status}  ${f.path}`)
+            .filter((f) => ['C', 'M', 'A', 'D', 'R'].some((st) => f.startsWith(st)))
+          hasConflict = statusResult.files.some((f) => f.status === 'C')
+        } catch {
+          // 忽略 getSvnStatus 的错误
+        }
+
+        if (hasConflict) {
+          revisionStates[currentIndex].status = 'conflict'
+          revisionStates[currentIndex].files = affectedFiles
+          revisionStates[currentIndex].message = '合并冲突'
+
+          const allFiles = new Set<string>()
+          revisionStates.forEach((rev) => {
+            rev.files?.forEach((f) => allFiles.add(f))
+          })
+
+          return {
+            targetRepoName: targetRepo.alias,
+            targetRepoUrl: targetRepo.url,
+            targetRepoPath: targetRepo.url,
+            sourceRepoUrl: sourceRepo.url,
+            revisions: revisionStates,
+            currentRevisionIndex: currentIndex,
+            allCompleted: false,
+            success: true,
+            message: `版本 r${currentRevision} 合并冲突`,
+            files: Array.from(allFiles),
+            isMerging: false
+          }
+        }
+
+        // 真正的失败，停止处理
+        revisionStates[currentIndex].status = 'failed'
+        revisionStates[currentIndex].message = error instanceof Error ? error.message : '未知错误'
+
+        const allFiles = new Set<string>()
+        revisionStates.forEach((rev) => {
+          rev.files?.forEach((f) => allFiles.add(f))
+        })
+
         return {
           targetRepoName: targetRepo.alias,
           targetRepoUrl: targetRepo.url,
           targetRepoPath: targetRepo.url,
-          success: true,
-          message: '合并冲突',
-          files: affectedFiles,
-          output: error instanceof Error ? error.message : String(error)
+          sourceRepoUrl: sourceRepo.url,
+          revisions: revisionStates,
+          currentRevisionIndex: currentIndex,
+          allCompleted: false,
+          success: false,
+          message: `版本 r${currentRevision} 合并失败: ${error instanceof Error ? error.message : '未知错误'}`,
+          files: Array.from(allFiles),
+          isMerging: false
         }
       }
+    }
 
+    // 所有版本都成功处理完了
+    const allFiles = new Set<string>()
+    revisionStates.forEach((rev) => {
+      rev.files?.forEach((f) => allFiles.add(f))
+    })
+
+    return {
+      targetRepoName: targetRepo.alias,
+      targetRepoUrl: targetRepo.url,
+      targetRepoPath: targetRepo.url,
+      sourceRepoUrl: sourceRepo.url,
+      revisions: revisionStates,
+      currentRevisionIndex: -1,
+      allCompleted: true,
+      success: true,
+      message: '全部合并成功',
+      files: Array.from(allFiles),
+      isMerging: false
+    }
+  },
+
+  // 继续 merge 下一个版本（在冲突解决后调用）
+  mergeNextRevision: async (
+    sourceRepoUrl: string,
+    targetRepoPath: string,
+    currentSession: MergeSessionResult
+  ): Promise<MergeSessionResult> => {
+    // 验证是否还有待处理的版本
+    if (currentSession.currentRevisionIndex < 0 || currentSession.allCompleted) {
       return {
-        targetRepoName: targetRepo.alias,
-        targetRepoUrl: targetRepo.url,
-        targetRepoPath: targetRepo.url,
-        success: false,
-        message: `合并失败: ${error instanceof Error ? error.message : '未知错误'}`,
-        files: affectedFiles,
-        output: error instanceof Error ? error.message : undefined
+        ...currentSession,
+        message: '所有版本已完成'
       }
     }
+
+    // 循环处理版本，直到遇到冲突或失败才停止并返回
+    while (currentSession.currentRevisionIndex < currentSession.revisions.length) {
+      // 找到下一个待处理的版本
+      let nextIndex = currentSession.currentRevisionIndex
+      while (nextIndex < currentSession.revisions.length) {
+        const rev = currentSession.revisions[nextIndex]
+        if (rev.status === 'pending') {
+          break
+        }
+        nextIndex++
+      }
+
+      // 如果没有待处理的版本了
+      if (nextIndex >= currentSession.revisions.length) {
+        const hasAnyFailed = currentSession.revisions.some((r) => r.status === 'failed')
+        const hasAnyConflict = currentSession.revisions.some((r) => r.status === 'conflict')
+
+        currentSession.currentRevisionIndex = -1
+        currentSession.allCompleted = true
+        currentSession.success = !hasAnyFailed
+        currentSession.message = hasAnyFailed
+          ? '部分版本合并失败'
+          : hasAnyConflict
+            ? '所有冲突已解决'
+            : '全部合并成功'
+        return currentSession
+      }
+
+      // Merge 当前版本
+      const nextRevision = currentSession.revisions[nextIndex].revision
+      currentSession.revisions[nextIndex].status = 'merging'
+
+      try {
+        const mergeCmd = `svn merge --accept=postpone -c ${nextRevision} "${sourceRepoUrl}" "${targetRepoPath}"`
+        await execAsync(mergeCmd, {
+          cwd: targetRepoPath,
+          maxBuffer: 10 * 1024 * 1024
+        })
+
+        // 获取受影响的文件列表
+        const statusResult = await apiHandlers.getSvnStatus(targetRepoPath)
+        const affectedFiles = statusResult.files
+          .map((f) => `${f.status}  ${f.path}`)
+          .filter((f) => ['C', 'M', 'A', 'D', 'R'].some((st) => f.startsWith(st)))
+
+        const hasConflict = statusResult.files.some((f) => f.status === 'C')
+
+        // 更新当前版本的状态
+        currentSession.revisions[nextIndex].status = hasConflict ? 'conflict' : 'success'
+        currentSession.revisions[nextIndex].files = affectedFiles
+        currentSession.revisions[nextIndex].message = hasConflict ? '合并冲突' : '合并成功'
+
+        // 更新累积的文件列表
+        const allFiles = new Set(currentSession.files || [])
+        affectedFiles.forEach((f) => allFiles.add(f))
+        currentSession.files = Array.from(allFiles)
+
+        // 如果有冲突，停止并返回，等待用户解决
+        if (hasConflict) {
+          currentSession.currentRevisionIndex = nextIndex
+          currentSession.message = `版本 r${nextRevision} 合并冲突`
+          return currentSession
+        }
+
+        // 成功了，继续循环处理下一个版本
+        currentSession.currentRevisionIndex = nextIndex + 1
+        currentSession.message = `版本 r${nextRevision} 合并成功，继续处理下一个版本...`
+        // 继续循环，不返回
+      } catch (error) {
+        // 即使出错，也尝试获取文件列表
+        let affectedFiles: string[] = []
+        let hasConflict = false
+        try {
+          const statusResult = await apiHandlers.getSvnStatus(targetRepoPath)
+          affectedFiles = statusResult.files
+            .map((f) => `${f.status}  ${f.path}`)
+            .filter((f) => ['C', 'M', 'A', 'D', 'R'].some((st) => f.startsWith(st)))
+          hasConflict = statusResult.files.some((f) => f.status === 'C')
+        } catch {
+          // 忽略
+        }
+
+        if (hasConflict) {
+          currentSession.revisions[nextIndex].status = 'conflict'
+          currentSession.revisions[nextIndex].files = affectedFiles
+          currentSession.revisions[nextIndex].message = '合并冲突'
+          currentSession.currentRevisionIndex = nextIndex
+          currentSession.message = `版本 r${nextRevision} 合并冲突`
+
+          // 更新累积的文件列表
+          const allFiles = new Set(currentSession.files || [])
+          affectedFiles.forEach((f) => allFiles.add(f))
+          currentSession.files = Array.from(allFiles)
+
+          return currentSession
+        }
+
+        // 真正的失败，停止所有处理
+        currentSession.revisions[nextIndex].status = 'failed'
+        currentSession.revisions[nextIndex].message =
+          error instanceof Error ? error.message : '未知错误'
+        currentSession.currentRevisionIndex = nextIndex
+        currentSession.success = false
+        currentSession.message = `版本 r${nextRevision} 合并失败: ${error instanceof Error ? error.message : '未知错误'}`
+        return currentSession
+      }
+    }
+
+    // 循环结束，所有待处理版本都已完成
+    const hasAnyFailed = currentSession.revisions.some((r) => r.status === 'failed')
+    currentSession.currentRevisionIndex = -1
+    currentSession.allCompleted = true
+    currentSession.success = !hasAnyFailed
+    currentSession.message = hasAnyFailed ? '部分版本合并失败' : '全部合并成功'
+    return currentSession
   }
 }
 

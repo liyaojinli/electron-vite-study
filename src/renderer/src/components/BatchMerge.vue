@@ -1,18 +1,4 @@
 <script setup lang="ts">
-// 合并进度面板数据
-const mergeDialogPanels = computed(() => {
-  return mergeResults.value.map((res) => {
-    // 使用 API 直接返回的 files 数组
-    const files = res.files || []
-    return {
-      targetRepoName: res.targetRepoName,
-      targetRepoPath: res.targetRepoPath || res.targetRepoUrl,
-      success: res.success,
-      isMerging: res.isMerging,
-      files
-    }
-  })
-})
 import { onMounted, ref, computed, watch } from 'vue'
 import {
   Play,
@@ -40,14 +26,26 @@ interface SvnLogEntry {
   selected?: boolean
 }
 
-interface MergeResult {
+// 单个版本的 merge 状态
+interface RevisionMergeState {
+  revision: number
+  status: 'pending' | 'merging' | 'success' | 'conflict' | 'failed'
+  files?: string[]
+  message?: string
+}
+
+// 单个仓库的 merge 会话状态
+interface MergeSessionResult {
   targetRepoName: string
   targetRepoUrl: string
-  targetRepoPath?: string
+  targetRepoPath: string
+  sourceRepoUrl: string
+  revisions: RevisionMergeState[]
+  currentRevisionIndex: number
+  allCompleted: boolean
   success: boolean
   message: string
   files?: string[]
-  output?: string
   isMerging?: boolean
 }
 
@@ -63,10 +61,9 @@ const remoteRepositories = ref<RepositoryData[]>([])
 const svnLogs = ref<SvnLogEntry[]>([])
 const selectedSourceRepo = ref<string>('')
 const selectedTargetRepos = ref<Set<string>>(new Set())
-const mergeResults = ref<MergeResult[]>([])
+const mergeResults = ref<MergeSessionResult[]>([])
 const isLoading = ref(false)
 const isLogLoading = ref(false)
-// (removed expandedResults used by removed Merge Results panel)
 const affectedFiles = ref<AffectedFile[]>([])
 const isLoadingFiles = ref(false)
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -138,11 +135,11 @@ const selectedRevisions = computed(() =>
   svnLogs.value.filter((log) => log.selected).map((log) => log.revision)
 )
 
-const getMergeResultForRepo = (repoUrl: string): MergeResult | undefined => {
+const getMergeResultForRepo = (repoUrl: string): MergeSessionResult | undefined => {
   return mergeResults.value.find((result) => result.targetRepoUrl === repoUrl)
 }
 
-const hasConflictFiles = (result?: MergeResult): boolean => {
+const hasConflictFiles = (result?: MergeSessionResult): boolean => {
   return Boolean(result?.files?.some((file) => file.startsWith('C')))
 }
 
@@ -222,6 +219,11 @@ const handleSelectionChange = (selection: SvnLogEntry[]): void => {
   })
 }
 
+const handleRowClick = (row: SvnLogEntry): void => {
+  if (!tableRef.value) return
+  tableRef.value.toggleRowSelection(row)
+}
+
 const toggleAllSelections = (): void => {
   if (!tableRef.value) return
   // Clear all selections
@@ -282,6 +284,19 @@ const toggleTargetRepo = (repoUrl: string): void => {
   } else {
     selectedTargetRepos.value.add(repoUrl)
   }
+}
+
+const handleRepoPanelClick = (repoUrl: string, event: MouseEvent): void => {
+  // Prevent event bubbling if clicking on checkbox or other interactive elements
+  const target = event.target as HTMLElement
+  if (
+    target.tagName === 'INPUT' ||
+    target.tagName === 'BUTTON' ||
+    target.closest('button')
+  ) {
+    return
+  }
+  toggleTargetRepo(repoUrl)
 }
 
 const openRepoDirectory = async (repoUrl: string): Promise<void> => {
@@ -365,6 +380,17 @@ const handleMergeCommitSuccess = (): void => {
   showMergeDialog.value = false
 }
 
+// 处理单个仓库的 merge 结果更新（在冲突解决并继续下一个版本后）
+const handleUpdateResult = (updatedResult: MergeSessionResult): void => {
+  console.log('[BatchMerge] 更新 merge 结果:', updatedResult)
+  mergeResults.value = mergeResults.value.map((item) => {
+    if (item.targetRepoUrl === updatedResult.targetRepoUrl) {
+      return updatedResult
+    }
+    return item
+  })
+}
+
 // Check if affected file can show diff (not a directory)
 // Files have extensions (contain .), directories don't
 const canShowAffectedFileDiff = (file: { status: string; path: string }): boolean => {
@@ -395,6 +421,15 @@ const performMerge = async (): Promise<void> => {
     targetRepoName: target.alias,
     targetRepoUrl: target.url,
     targetRepoPath: target.url,
+    sourceRepoUrl: source.url,
+    revisions: revisions.map((rev) => ({
+      revision: rev,
+      status: 'pending' as const,
+      files: [],
+      message: ''
+    })),
+    currentRevisionIndex: 0,
+    allCompleted: false,
     success: false,
     message: '合并中',
     files: [],
@@ -415,7 +450,7 @@ const performMerge = async (): Promise<void> => {
       mergeDialogLogs.value.push(`开始合并到 ${target.alias}`)
       mergeDialogCurrentTarget.value = target.alias
 
-      const res: MergeResult = await api.performSingleMerge(source, target, revisions)
+      const res: MergeSessionResult = await api.performSingleMerge(source, target, revisions)
       const url = res.targetRepoUrl || target.url
 
       mergeResults.value = mergeResults.value.map((item) => {
@@ -428,14 +463,13 @@ const performMerge = async (): Promise<void> => {
         }
       })
 
-      if (res.output) {
-        res.output.split(/\r?\n/).forEach((ln) => {
-          if (ln && ln.trim() !== '') mergeDialogLogs.value.push(`[${target.alias}] ${ln}`)
-        })
-      }
+      // 记录合并日志
+      mergeDialogLogs.value.push(
+        `[${target.alias}] ${res.message} (${res.revisions.filter((r) => r.status === 'success' || r.status === 'conflict').length}/${res.revisions.length})`
+      )
 
       if (res.success) {
-        mergeDialogLogs.value.push(`合并成功: ${target.alias}`)
+        mergeDialogLogs.value.push(`合并操作完成: ${target.alias}`)
       } else {
         anyFailure = true
         const msg = res.message || '未知错误'
@@ -522,6 +556,7 @@ const performMerge = async (): Promise<void> => {
                 style="width: 100%"
                 class="compact-table"
                 @selection-change="handleSelectionChange"
+                @row-click="handleRowClick"
               >
                 <el-table-column type="selection" width="40" align="center" />
                 <el-table-column prop="revision" label="Revision" width="80" align="center">
@@ -620,6 +655,8 @@ const performMerge = async (): Promise<void> => {
             v-for="repo in localRepositories.filter((r) => r.url !== selectedSourceRepo)"
             :key="repo.url"
             class="target-repo-panel"
+            style="cursor: pointer"
+            @click="handleRepoPanelClick(repo.url, $event)"
           >
             <div class="panel-header">
               <div class="panel-top-row" style="display: flex; align-items: center">
@@ -702,13 +739,14 @@ const performMerge = async (): Promise<void> => {
   <!-- Merge Progress Dialog -->
   <MergeProgressDialog
     :visible="showMergeDialog"
-    :results="mergeDialogPanels"
+    :results="mergeResults"
     :is-loading="mergeDialogLoading"
     :source-repo-url="selectedSourceRepo"
     :selected-revisions="selectedRevisions"
     @close="showMergeDialog = false"
     @refresh="handleMergeDialogRefresh"
     @commit-success="handleMergeCommitSuccess"
+    @update-result="handleUpdateResult"
   />
 </template>
 
