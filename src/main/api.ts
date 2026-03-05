@@ -817,15 +817,32 @@ export const apiHandlers = {
   svnCommit: async (
     repoPath: string,
     message: string,
+    filePaths?: string[],
     username?: string,
     password?: string
   ): Promise<{ success: boolean; message: string; output?: string }> => {
     try {
       // Escape shell special characters in message
       const escapedMessage = message.replace(/"/g, '\\"')
+
+      const commitPaths = (filePaths || [])
+        .map((filePath) => filePath.trim())
+        .filter((filePath) => filePath !== '')
+
+      if (commitPaths.length === 0) {
+        return {
+          success: false,
+          message: '提交失败: 未找到可提交的 merge 文件',
+          output: 'No merge files to commit'
+        }
+      }
+
+      const escapedPaths = commitPaths
+        .map((filePath) => `"${filePath.replace(/"/g, '\\"')}"`)
+        .join(' ')
       
       // Build svn commit command
-      let cmd = `svn commit -m "${escapedMessage}"`
+      let cmd = `svn commit -m "${escapedMessage}" ${escapedPaths}`
       
       // Add authentication if provided
       if (username && password) {

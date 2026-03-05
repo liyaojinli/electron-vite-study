@@ -408,6 +408,20 @@ const isConflict = (fileEntry: string, repoPath?: string): boolean => {
   return getEffectiveFileStatus(fileEntry, repoPath) === 'C'
 }
 
+const getCommitFilePaths = (result: MergeSessionResult): string[] => {
+  if (!result.files || !result.targetRepoPath) return []
+
+  const commitableStatuses = new Set(['A', 'M', 'D', 'R'])
+  const filePaths = result.files
+    .filter((fileEntry) =>
+      commitableStatuses.has(getEffectiveFileStatus(fileEntry, result.targetRepoPath))
+    )
+    .map((fileEntry) => parseFilePath(fileEntry, result.targetRepoPath))
+    .filter((filePath) => filePath !== '')
+
+  return Array.from(new Set(filePaths))
+}
+
 const handleFileClick = (result: MergeSessionResult, fileEntry: string): void => {
   const filePath = parseFilePath(fileEntry, result.targetRepoPath)
   // We need the repo path. It might be stored in result.targetRepoPath
@@ -596,6 +610,12 @@ const handleCommit = async (): Promise<void> => {
 
   for (const result of successRepos) {
     try {
+      const commitFilePaths = getCommitFilePaths(result)
+      if (commitFilePaths.length === 0) {
+        errors.push(`${result.targetRepoName}: 未找到本次 merge 的可提交文件`)
+        continue
+      }
+
       // 如果用户名和密码都为空，则不传递认证信息，使用缓存的凭据
       const hasAuth = commitUsername.value.trim() !== '' && commitPassword.value.trim() !== ''
       
@@ -603,10 +623,11 @@ const handleCommit = async (): Promise<void> => {
         ? await api.svnCommit(
             result.targetRepoPath!,
             commitMessage.value,
+            commitFilePaths,
             commitUsername.value,
             commitPassword.value
           )
-        : await api.svnCommit(result.targetRepoPath!, commitMessage.value)
+        : await api.svnCommit(result.targetRepoPath!, commitMessage.value, commitFilePaths)
 
       if (commitResult.success) {
         successCount++
