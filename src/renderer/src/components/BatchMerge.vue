@@ -58,6 +58,7 @@ const api = window.api
 
 const localRepositories = ref<RepositoryData[]>([])
 const remoteRepositories = ref<RepositoryData[]>([])
+const remoteUrlByLocalPath = ref<Record<string, string>>({})
 const svnLogs = ref<SvnLogEntry[]>([])
 const selectedSourceRepo = ref<string>('')
 const selectedTargetRepos = ref<Set<string>>(new Set())
@@ -92,6 +93,18 @@ const loadRepositories = async (): Promise<void> => {
   try {
     localRepositories.value = await api.getLocalRepositories()
     remoteRepositories.value = await api.listRepositories()
+
+    const urlEntries = await Promise.all(
+      localRepositories.value.map(async (repo) => {
+        try {
+          const result = await api.getSvnRemoteUrl(repo.url)
+          return [repo.url, result.success ? result.url : ''] as const
+        } catch {
+          return [repo.url, ''] as const
+        }
+      })
+    )
+    remoteUrlByLocalPath.value = Object.fromEntries(urlEntries)
   } catch (error) {
     console.error('Failed to load repositories:', error)
   }
@@ -289,11 +302,7 @@ const toggleTargetRepo = (repoUrl: string): void => {
 const handleRepoPanelClick = (repoUrl: string, event: MouseEvent): void => {
   // Prevent event bubbling if clicking on checkbox or other interactive elements
   const target = event.target as HTMLElement
-  if (
-    target.tagName === 'INPUT' ||
-    target.tagName === 'BUTTON' ||
-    target.closest('button')
-  ) {
+  if (target.tagName === 'INPUT' || target.tagName === 'BUTTON' || target.closest('button')) {
     return
   }
   toggleTargetRepo(repoUrl)
@@ -311,6 +320,45 @@ const openRepoDirectory = async (repoUrl: string): Promise<void> => {
   }
 }
 
+const getRemoteRepoUrlByLocalPath = (localPath: string): string => {
+  return remoteUrlByLocalPath.value[localPath] || ''
+}
+
+const getLastPathSegment = (value: string): string => {
+  if (!value) return ''
+  const normalized = value.replace(/\\/g, '/').replace(/\/+$/, '')
+  const last = normalized.split('/').pop() || ''
+  try {
+    return decodeURIComponent(last)
+  } catch {
+    return last
+  }
+}
+
+const validateTargetRepoPathMatch = (): boolean => {
+  const mismatchRepos: string[] = []
+  const sourceRemoteTail = getLastPathSegment(sourceRepo.value?.url || '')
+
+  if (!sourceRemoteTail) {
+    alert('远程仓库和本地仓库路径不匹配')
+    return false
+  }
+
+  for (const repo of targetRepos.value) {
+    const localTail = getLastPathSegment(repo.url)
+    if (!localTail || localTail !== sourceRemoteTail) {
+      mismatchRepos.push(repo.alias)
+    }
+  }
+
+  if (mismatchRepos.length > 0) {
+    alert(`远程仓库和本地仓库路径不匹配: ${mismatchRepos.join('、')}`)
+    return false
+  }
+
+  return true
+}
+
 // (toggleResultExpanded removed — no merge results panel now)
 
 // Handle clicking on affected file to view revision diff
@@ -318,8 +366,8 @@ const handleViewAffectedFileDiff = (
   file: { status: string; path: string },
   revision: number
 ): void => {
-  // Don't allow viewing diff for directories
-  if (file.path.endsWith('/')) return
+  // Don't allow viewing diff for directories (check for both / and \)
+  if (file.path.endsWith('/') || file.path.endsWith('\\')) return
 
   diffViewerReadOnlyRepoPath.value = sourceRepo.value?.url || ''
   diffViewerReadOnlyFilePath.value = file.path
@@ -378,6 +426,12 @@ const handleMergeCommitSuccess = (): void => {
   // 提交成功后清除未完成合并标志
   hasPendingMerge.value = false
   showMergeDialog.value = false
+  mergeResults.value = []
+  selectedTargetRepos.value = new Set()
+  mergeDialogLogs.value = []
+  mergeDialogCurrentTarget.value = ''
+  mergeDialogLoading.value = false
+  mergeDialogSuccess.value = null
 }
 
 // 处理单个仓库的 merge 结果更新（在冲突解决并继续下一个版本后）
@@ -394,10 +448,11 @@ const handleUpdateResult = (updatedResult: MergeSessionResult): void => {
 // Check if affected file can show diff (not a directory)
 // Files have extensions (contain .), directories don't
 const canShowAffectedFileDiff = (file: { status: string; path: string }): boolean => {
-  // 以 / 结尾的是目录
-  if (file.path.endsWith('/')) return false
-  // 获取文件名，检查是否包含扩展名
-  const fileName = file.path.split('/').pop() || ''
+  // 以 / 或 \ 结尾的是目录
+  if (file.path.endsWith('/') || file.path.endsWith('\\')) return false
+  // 获取文件名，检查是否包含扩展名（支持 / 和 \ 分隔符）
+  const separator = file.path.includes('\\') ? '\\' : '/'
+  const fileName = file.path.split(separator).pop() || ''
   return fileName.includes('.')
 }
 
@@ -407,6 +462,11 @@ const performMerge = async (): Promise<void> => {
   // 如果有待处理的合并，直接显示对话框
   if (hasPendingMerge.value) {
     showMergeDialog.value = true
+    return
+  }
+
+  const isRepoPathMatched = validateTargetRepoPathMatch()
+  if (!isRepoPathMatched) {
     return
   }
 
@@ -666,7 +726,17 @@ const performMerge = async (): Promise<void> => {
                   :checked="selectedTargetRepos.has(repo.url)"
                   @change="toggleTargetRepo(repo.url)"
                 />
-                <span class="repo-alias">{{ repo.alias }}</span>
+                <el-tooltip
+                  :content="repo.alias"
+                  placement="top"
+                  :show-after="300"
+                  :disabled="!repo.alias"
+                  popper-class="commit-message-tooltip"
+                  effect="light"
+                  :show-arrow="false"
+                >
+                  <span class="repo-alias">{{ repo.alias }}</span>
+                </el-tooltip>
                 <span v-if="getMergeResultForRepo(repo.url)" class="merge-status-icon">
                   <span
                     v-if="getRepoMergeStatus(repo.url) === 'success'"
@@ -706,7 +776,36 @@ const performMerge = async (): Promise<void> => {
               </div>
             </div>
             <div class="panel-body">
-              <div class="repo-url">{{ repo.url }}</div>
+              <div class="repo-path-row">
+                <span class="repo-path-label">本地路径:</span>
+                <el-tooltip
+                  :content="repo.url"
+                  placement="top"
+                  :show-after="300"
+                  :disabled="!repo.url"
+                  popper-class="commit-message-tooltip"
+                  effect="light"
+                  :show-arrow="false"
+                >
+                  <span class="repo-path-value">{{ repo.url }}</span>
+                </el-tooltip>
+              </div>
+              <div class="repo-path-row">
+                <span class="repo-path-label repo-path-value--remote">远程路径:</span>
+                <el-tooltip
+                  :content="getRemoteRepoUrlByLocalPath(repo.url)"
+                  placement="top"
+                  :show-after="300"
+                  :disabled="!getRemoteRepoUrlByLocalPath(repo.url)"
+                  popper-class="commit-message-tooltip"
+                  effect="light"
+                  :show-arrow="false"
+                >
+                  <span class="repo-path-value repo-path-value--remote">
+                    {{ getRemoteRepoUrlByLocalPath(repo.url) || '-' }}
+                  </span>
+                </el-tooltip>
+              </div>
             </div>
           </div>
         </div>
@@ -1380,11 +1479,31 @@ const performMerge = async (): Promise<void> => {
   color: var(--color-text-secondary);
 }
 
-.repo-url {
+.repo-path-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.repo-path-row + .repo-path-row {
+  margin-top: 6px;
+}
+
+.repo-path-label {
+  flex-shrink: 0;
+}
+
+.repo-path-value {
+  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: monospace;
+}
+
+.repo-path-value--remote {
+  color: var(--el-color-primary);
 }
 
 .merge-action {

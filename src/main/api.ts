@@ -317,24 +317,65 @@ export const apiHandlers = {
     }
   },
 
+  getSvnRemoteUrl: async (
+    repoPath: string
+  ): Promise<{ success: boolean; url: string; message: string }> => {
+    try {
+      const showItemCmd = 'svn info --show-item url'
+      try {
+        const output = execSync(showItemCmd, { encoding: 'utf-8', cwd: repoPath }).trim()
+        return {
+          success: true,
+          url: output,
+          message: '获取远程路径成功'
+        }
+      } catch {
+        const infoOutput = execSync('svn info', { encoding: 'utf-8', cwd: repoPath })
+        const match = infoOutput.match(/^URL:\s*(.+)$/m)
+        if (match?.[1]) {
+          return {
+            success: true,
+            url: match[1].trim(),
+            message: '获取远程路径成功'
+          }
+        }
+        return {
+          success: false,
+          url: '',
+          message: '未在 svn info 输出中找到远程路径'
+        }
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : '获取远程路径失败'
+      return {
+        success: false,
+        url: '',
+        message: `获取远程路径失败: ${errorMsg}`
+      }
+    }
+  },
+
   svnRevert: async (
     repoPath: string,
     filePaths?: string[]
   ): Promise<{ success: boolean; logs: string[]; message: string }> => {
     try {
       let cmd: string
+      let output: string
 
       if (filePaths && filePaths.length > 0) {
         // Revert only specified files
         const escapedPaths = filePaths.map((p) => `"${p}"`).join(' ')
-        cmd = `cd "${repoPath}" && svn revert ${escapedPaths}`
+        cmd = `svn revert ${escapedPaths}`
+        console.log('[svnRevert] Executing:', cmd)
+        output = execSync(cmd, { encoding: 'utf-8', cwd: repoPath })
       } else {
         // Revert entire repository
-        cmd = `svn revert -R "${repoPath}"`
+        cmd = `svn revert -R "."`
+        console.log('[svnRevert] Executing:', cmd)
+        output = execSync(cmd, { encoding: 'utf-8', cwd: repoPath })
       }
 
-      console.log('[svnRevert] Executing:', cmd)
-      const output = execSync(cmd, { encoding: 'utf-8' })
       const logs = output
         .trim()
         .split('\n')
@@ -362,9 +403,9 @@ export const apiHandlers = {
     try {
       // Convert to relative path if absolute
       const relativePath = path.isAbsolute(filePath) ? path.relative(repoPath, filePath) : filePath
-      const cmd = `cd "${repoPath}" && svn diff "${relativePath}"`
+      const cmd = `svn diff "${relativePath}"`
       console.log('[getSvnDiff] Executing:', cmd)
-      const output = execSync(cmd, { encoding: 'utf-8' })
+      const output = execSync(cmd, { encoding: 'utf-8', cwd: repoPath })
 
       return {
         success: true,
@@ -392,9 +433,9 @@ export const apiHandlers = {
     try {
       // Convert to relative path if absolute
       const relativePath = path.isAbsolute(filePath) ? path.relative(repoPath, filePath) : filePath
-      const cmd = `cd "${repoPath}" && svn diff -r${baseRevision}:${targetRevision} "${relativePath}"`
+      const cmd = `svn diff -r${baseRevision}:${targetRevision} "${relativePath}"`
       console.log('[getSvnRevisionDiff] Executing:', cmd)
-      const output = execSync(cmd, { encoding: 'utf-8' })
+      const output = execSync(cmd, { encoding: 'utf-8', cwd: repoPath })
 
       return {
         success: true,
@@ -485,20 +526,22 @@ export const apiHandlers = {
 
       // For BASE, HEAD or numeric revisions
       let cmd: string
+      let output: string
       if (isUrl) {
         // For remote URL, use full URL with file path
         const fullUrl = repoPath.endsWith('/') ? repoPath + filePath : `${repoPath}/${filePath}`
         cmd = `svn cat -r ${revision} "${fullUrl}"`
+        console.log('[getSvnFileContent] Executing:', cmd)
+        output = execSync(cmd, { encoding: 'utf-8' })
       } else {
-        // For local working copy, use cd + relative path
+        // For local working copy, use cwd option
         const relativePath = path.isAbsolute(filePath)
           ? path.relative(repoPath, filePath)
           : filePath
-        cmd = `cd "${repoPath}" && svn cat -r ${revision} "${relativePath}"`
+        cmd = `svn cat -r ${revision} "${relativePath}"`
+        console.log('[getSvnFileContent] Executing:', cmd)
+        output = execSync(cmd, { encoding: 'utf-8', cwd: repoPath })
       }
-      
-      console.log('[getSvnFileContent] Executing:', cmd)
-      const output = execSync(cmd, { encoding: 'utf-8' })
 
       return {
         success: true,
@@ -718,8 +761,8 @@ export const apiHandlers = {
       fs.writeFileSync(tempPaths.workingPath, workingContent, 'utf-8')
       fs.writeFileSync(tempPaths.fullPath, workingContent, 'utf-8')
 
-      const cmd = `cd "${repoPath}" && svn resolve --accept working "${tempPaths.relativePath}"`
-      execSync(cmd, { encoding: 'utf-8' })
+      const cmd = `svn resolve --accept working "${tempPaths.relativePath}"`
+      execSync(cmd, { encoding: 'utf-8', cwd: repoPath })
 
       const cleanupTargets = [
         tempPaths.workingPath,
@@ -753,9 +796,9 @@ export const apiHandlers = {
       // Convert to relative path if absolute
       const relativePath = path.isAbsolute(filePath) ? path.relative(repoPath, filePath) : filePath
       // Mark the conflict as resolved with the working copy version
-      const cmd = `cd "${repoPath}" && svn resolve --accept working "${relativePath}"`
+      const cmd = `svn resolve --accept working "${relativePath}"`
       console.log('[markSvnResolved] Executing:', cmd)
-      execSync(cmd, { encoding: 'utf-8' })
+      execSync(cmd, { encoding: 'utf-8', cwd: repoPath })
 
       return {
         success: true,
@@ -782,7 +825,7 @@ export const apiHandlers = {
       const escapedMessage = message.replace(/"/g, '\\"')
       
       // Build svn commit command
-      let cmd = `cd "${repoPath}" && svn commit -m "${escapedMessage}"`
+      let cmd = `svn commit -m "${escapedMessage}"`
       
       // Add authentication if provided
       if (username && password) {
@@ -791,7 +834,7 @@ export const apiHandlers = {
       
       console.log('[svnCommit] Executing commit for:', repoPath)
       
-      const output = execSync(cmd, { encoding: 'utf-8' })
+      const output = execSync(cmd, { encoding: 'utf-8', cwd: repoPath })
       console.log('[svnCommit] Output:', output)
 
       return {

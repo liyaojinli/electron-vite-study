@@ -27,11 +27,11 @@
         </div>
         <div class="commit-field commit-field-message">
           <label class="commit-label">提交信息:</label>
-          <input
+          <textarea
             v-model="commitMessage"
-            type="text"
-            class="commit-input"
+            class="commit-input commit-input-textarea"
             placeholder="输入提交信息"
+            rows="4"
           />
         </div>
       </div>
@@ -256,22 +256,62 @@ const isCommitting = ref(false)
 // 跟踪已解决的冲突文件 (key: repoPath::filePath)
 const resolvedConflicts = ref<Set<string>>(new Set())
 
+const normalizeSourceRepoForCommitMessage = (sourceRepoUrl: string): string => {
+  try {
+    const parsed = new URL(sourceRepoUrl)
+    const normalizedPath = (parsed.pathname || '').replace(/\/+$/, '')
+    return normalizedPath || '/'
+  } catch {
+    // Fallback for non-standard URL strings.
+    const normalized = sourceRepoUrl.replace(/^https?:\/\/[^/]+/i, '').replace(/\/+$/, '')
+    return normalized || sourceRepoUrl
+  }
+}
+
+const normalizeRevisionMessage = (message: string): string => {
+  const singleLine = message.replace(/\r?\n/g, ' ').trim()
+  return singleLine || '(no message)'
+}
+
 // 生成默认的 commit message
-const generateDefaultCommitMessage = (): string => {
+const generateDefaultCommitMessage = async (): Promise<string> => {
   if (!props.sourceRepoUrl || !props.selectedRevisions || props.selectedRevisions.length === 0) {
     return ''
   }
+
   const revisions = [...props.selectedRevisions].sort((a, b) => a - b)
-  const revStr = revisions.map((r) => `r${r}`).join(',')
-  return `merged ${revStr} from ${props.sourceRepoUrl}`
+  const sourceRepoPath = normalizeSourceRepoForCommitMessage(props.sourceRepoUrl)
+
+  let revisionMessageMap = new Map<number, string>()
+  try {
+    const logs = await api.getSvnLog(props.sourceRepoUrl, 5000)
+    revisionMessageMap = new Map(logs.map((log) => [log.revision, log.message]))
+  } catch (error) {
+    console.warn('[MergeProgressDialog] 获取源仓库提交信息失败:', error)
+  }
+
+  const revisionLines = revisions.map((revision) => {
+    const sourceMessage = normalizeRevisionMessage(revisionMessageMap.get(revision) || '')
+    return `r${revision} ${sourceMessage}`
+  })
+
+  return [`Merged from ${sourceRepoPath}`, ...revisionLines].join('\n')
 }
 
 // 当对话框打开或数据变化时，生成默认 commit message
 watch(
   () => [props.visible, props.sourceRepoUrl, props.selectedRevisions],
-  ([visible]) => {
+  async ([visible], _oldValue, onCleanup) => {
+    let canceled = false
+    onCleanup(() => {
+      canceled = true
+    })
+
     if (visible) {
-      commitMessage.value = generateDefaultCommitMessage()
+      const message = await generateDefaultCommitMessage()
+      if (!canceled && props.visible) {
+        commitMessage.value = message
+      }
     }
   },
   { immediate: true, deep: true }
@@ -878,6 +918,12 @@ const handleCommit = async (): Promise<void> => {
   background: var(--color-background-primary);
   color: var(--color-text-primary);
   font-size: 13px;
+}
+
+.commit-input-textarea {
+  resize: vertical;
+  min-height: 72px;
+  line-height: 1.4;
 }
 .commit-input:focus {
   outline: none;
