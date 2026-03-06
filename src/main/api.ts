@@ -100,6 +100,51 @@ const resolveConflictTempPaths = (
   }
 }
 
+type SvnLogEntry = {
+  revision: number
+  author: string
+  date: string
+  message: string
+}
+
+const decodeXmlEntities = (input: string): string => {
+  return input
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&')
+}
+
+const parseSvnLogXml = (xml: string): SvnLogEntry[] => {
+  const logs: SvnLogEntry[] = []
+  const entryRegex = /<logentry\s+revision="(\d+)"[^>]*>([\s\S]*?)<\/logentry>/g
+
+  let entryMatch: RegExpExecArray | null
+  while ((entryMatch = entryRegex.exec(xml)) !== null) {
+    const revision = parseInt(entryMatch[1], 10)
+    const body = entryMatch[2]
+
+    const authorMatch = body.match(/<author>([\s\S]*?)<\/author>/)
+    const dateMatch = body.match(/<date>([\s\S]*?)<\/date>/)
+
+    let message = ''
+    const msgMatch = body.match(/<msg>([\s\S]*?)<\/msg>/)
+    if (msgMatch) {
+      message = decodeXmlEntities(msgMatch[1])
+    }
+
+    logs.push({
+      revision,
+      author: authorMatch ? decodeXmlEntities(authorMatch[1]) : '',
+      date: dateMatch ? dateMatch[1] : '',
+      message
+    })
+  }
+
+  return logs
+}
+
 // ========== API 定义区（只在这里添加新 API）==========
 export const apiHandlers = {
   // Remote Repository APIs
@@ -219,28 +264,44 @@ export const apiHandlers = {
       }
 
       const output = execSync(cmd, { encoding: 'utf-8' })
-
-      // Parse XML output
-      const logs: Array<{ revision: number; author: string; date: string; message: string }> = []
-
-      const revisionRegex =
-        /<logentry\s+revision="(\d+)"[^>]*>[\s\S]*?<author>([^<]*)<\/author>[\s\S]*?<date>([^<]*)<\/date>[\s\S]*?<msg>([^<]*)<\/msg>/g
-
-      let match
-      while ((match = revisionRegex.exec(output)) !== null) {
-        logs.push({
-          revision: parseInt(match[1], 10),
-          author: match[2],
-          date: match[3],
-          message: match[4]
-        })
-      }
-
-      return logs
+      return parseSvnLogXml(output)
     } catch (error) {
       console.error('Failed to fetch SVN logs:', error)
       return []
     }
+  },
+
+  getSvnLogByRevisions: async (
+    repoPath: string,
+    revisions: number[]
+  ): Promise<Array<{ revision: number; author: string; date: string; message: string }>> => {
+    const uniqueRevisions = Array.from(
+      new Set(revisions.filter((r) => Number.isFinite(r) && r > 0))
+    )
+      .map((r) => Math.floor(r))
+      .sort((a, b) => a - b)
+
+    if (uniqueRevisions.length === 0) {
+      return []
+    }
+
+    const logs: SvnLogEntry[] = []
+    for (const revision of uniqueRevisions) {
+      try {
+        // 精确查询远程仓库指定 revision，避免被 --limit 截断。
+        const cmd = `svn log "${repoPath}" -r ${revision}:${revision} --xml`
+        const output = execSync(cmd, { encoding: 'utf-8' })
+        const parsed = parseSvnLogXml(output)
+        const matched = parsed.find((entry) => entry.revision === revision)
+        if (matched) {
+          logs.push(matched)
+        }
+      } catch (error) {
+        console.warn(`Failed to fetch SVN log for revision r${revision}:`, error)
+      }
+    }
+
+    return logs
   },
 
   svnUpdate: async (
@@ -820,7 +881,7 @@ export const apiHandlers = {
     filePaths?: string[],
     username?: string,
     password?: string
-  ): Promise<{ success: boolean; message: string; output?: string }> => {
+  ): Promise<{ success: boolean; message: string; output?: string; command?: string }> => {
     try {
       // Escape shell special characters in message
       const escapedMessage = message.replace(/"/g, '\\"')
@@ -833,7 +894,8 @@ export const apiHandlers = {
         return {
           success: false,
           message: '提交失败: 未找到可提交的 merge 文件',
-          output: 'No merge files to commit'
+          output: 'No merge files to commit',
+          command: 'svn commit (no files)'
         }
       }
 
@@ -857,15 +919,28 @@ export const apiHandlers = {
       return {
         success: true,
         message: '提交成功',
-        output
+        output,
+        command: cmd
       }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : '提交失败'
       console.error('[svnCommit] Error:', errorMsg)
+      
+      // Build command for error case as well
+      const escapedMessage = message.replace(/"/g, '\\"')
+      const escapedPaths = (filePaths || [])
+        .map((filePath) => `"${filePath.replace(/"/g, '\\"')}"`)
+        .join(' ')
+      let cmd = `svn commit -m "${escapedMessage}" ${escapedPaths}`
+      if (username && password) {
+        cmd += ` --username "${username}" --password "***" --non-interactive --no-auth-cache`
+      }
+      
       return {
         success: false,
         message: `提交失败: ${errorMsg}`,
-        output: errorMsg
+        output: errorMsg,
+        command: cmd
       }
     }
   },

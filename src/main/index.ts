@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, nativeTheme } from 'electron'
 import { join } from 'path'
 import fs from 'fs/promises'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -60,14 +60,24 @@ const saveWindowState = async (window: BrowserWindow): Promise<void> => {
 
 async function createWindow(): Promise<void> {
   const state = await loadWindowState()
+  
+  // 设置窗口初始背景色（与 CSS --color-background-primary 保持一致）
+  // 这样在页面加载前就有正确的背景色
+  const getInitialBackgroundColor = (): string => {
+    // 默认根据系统主题，但主要由 CSS 控制
+    return nativeTheme.shouldUseDarkColors ? '#1c1c1e' : '#ffffff'
+  }
+  
   // Create the browser window.
   const mainWindow = new BrowserWindow({
+    title: 'svn 批量代码合并工具',
     width: state.width,
     height: state.height,
     x: state.x,
     y: state.y,
     show: false,
     autoHideMenuBar: true,
+    backgroundColor: getInitialBackgroundColor(),
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -137,6 +147,9 @@ async function createWindow(): Promise<void> {
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
 app.whenReady().then(async () => {
+  // 默认使用系统主题（但可以被渲染进程覆盖）
+  nativeTheme.themeSource = 'system'
+  
   // Set app user model id for windows
   electronApp.setAppUserModelId('com.electron')
 
@@ -149,6 +162,20 @@ app.whenReady().then(async () => {
 
   // IPC test
   ipcMain.on('ping', () => console.log('pong'))
+
+  // 监听渲染进程的主题变化，设置原生窗口主题
+  ipcMain.on('theme:set', (_event, isDark: boolean) => {
+    // 设置 nativeTheme.themeSource 会影响所有窗口的原生外观（包括标题栏）
+    nativeTheme.themeSource = isDark ? 'dark' : 'light'
+    
+    // 同时更新窗口背景色以保持一致
+    const backgroundColor = isDark ? '#1c1c1e' : '#ffffff'
+    BrowserWindow.getAllWindows().forEach((window) => {
+      if (!window.isDestroyed()) {
+        window.setBackgroundColor(backgroundColor)
+      }
+    })
+  })
 
   registerApiHandlers()
 

@@ -8,10 +8,16 @@ type API = {
     : never
 }
 
+// 主题 API 类型
+interface ThemeAPI {
+  setTheme: (isDark: boolean) => void
+}
+
 declare global {
   interface Window {
     electron: ElectronAPI
     api: API
+    theme: ThemeAPI
   }
 }
 

@@ -62,10 +62,19 @@ const saveRepository = async (index: number): Promise<void> => {
       alert(verifyResult.message || '本地路径验证失败。')
       return
     }
-    const result = newRows.value.has(repo)
-      ? await api.insertLocalRepository(index, payload)
-      : await api.updateLocalRepository(index, payload)
-    updateRepositories(result)
+    // 调用 API 保存，但不使用返回结果刷新整个列表
+    if (newRows.value.has(repo)) {
+      await api.insertLocalRepository(index, payload)
+    } else {
+      await api.updateLocalRepository(index, payload)
+    }
+    
+    // 不要刷新整个列表，只更新当前行的 baseline 数据
+    // 这样可以保留其他行正在编辑的数据
+    baselineData.value[index] = payload
+    if (newRows.value.has(repo)) {
+      newRows.value.delete(repo)
+    }
   } catch (error) {
     console.error('Failed to save local repository:', error)
   }
@@ -75,13 +84,18 @@ const removeRepository = async (index: number): Promise<void> => {
   try {
     const repo = repositories.value[index]
     if (newRows.value.has(repo)) {
+      // 新行，直接从列表中删除
       repositories.value.splice(index, 1)
       baselineData.value.splice(index, 1)
       newRows.value.delete(repo)
       resetPasswordVisibility()
     } else {
-      const result = await api.deleteLocalRepository(index)
-      updateRepositories(result)
+      // 已保存的行，调用 API 删除
+      await api.deleteLocalRepository(index)
+      // 不要刷新整个列表，只从当前列表中移除这一行
+      repositories.value.splice(index, 1)
+      baselineData.value.splice(index, 1)
+      resetPasswordVisibility()
     }
   } catch (error) {
     console.error('Failed to remove local repository:', error)

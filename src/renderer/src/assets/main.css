@@ -46,6 +46,7 @@ body,
   --color-background-secondary: #f2f2f7;
   --color-background-hover: #e5e5ea;
   --color-border: #d1d1d6;
+  --color-border-subtle: #e5e5ea;
   --color-primary: #0a84ff;
   --color-primary-transparent: rgba(10, 132, 255, 0.2);
   --color-success: #34c759;
@@ -94,6 +95,7 @@ body,
   --color-background-secondary: #2c2c2e;
   --color-background-hover: #3a3a3c;
   --color-border: #3a3a3c;
+  --color-border-subtle: #2c2c2e;
   --color-primary: #0a84ff;
   --color-primary-transparent: rgba(10, 132, 255, 0.2);
   --color-success: #30d158;

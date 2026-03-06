@@ -180,6 +180,17 @@
       :target-revision="diffViewerTargetRevision"
       @close="diffViewerReadOnlyVisible = false"
     />
+
+    <!-- SVN Before Commit Confirm Dialog -->
+    <SvnBeforeCommitConfirm
+      :visible="beforeCommitConfirmVisible"
+      :repositories="repositoriesToConfirm"
+      @confirm="handleConfirmCommit"
+      @cancel="beforeCommitConfirmVisible = false"
+    />
+
+    <!-- SVN Log Viewer -->
+    <SvnLogViewer :visible="logViewerVisible" :logs="commitLogs" @close="handleLogViewerClose" />
   </div>
 </template>
 
@@ -189,6 +200,8 @@ import { ChevronDown, ChevronRight } from 'lucide-vue-next'
 import { LoaderCircle } from 'lucide-vue-next'
 import SvnConflictMerge from './SvnConflictMerge.vue'
 import SvnDiffViewerReadOnly from './SvnDiffViewerReadOnly.vue'
+import SvnBeforeCommitConfirm from './SvnBeforeCommitConfirm.vue'
+import SvnLogViewer, { type SvnCommitLog } from './SvnLogViewer.vue'
 
 // 单个版本的 merge 状态
 interface RevisionMergeState {
@@ -253,6 +266,24 @@ const commitPassword = ref('')
 const commitMessage = ref('')
 const isCommitting = ref(false)
 
+// SVN 日志查看器相关状态
+const logViewerVisible = ref(false)
+const commitLogs = ref<SvnCommitLog[]>([])
+
+// 提交前确认对话框相关状态
+const beforeCommitConfirmVisible = ref(false)
+interface FileWithStatus {
+  path: string
+  status: string // M, A, D, R
+}
+interface RepositoryToConfirm {
+  targetRepoName: string
+  targetRepoPath: string
+  files: FileWithStatus[]
+}
+const repositoriesToConfirm = ref<RepositoryToConfirm[]>([])
+const confirmedReposForCommit = ref<Set<string>>(new Set())
+
 // 跟踪已解决的冲突文件 (key: repoPath::filePath)
 const resolvedConflicts = ref<Set<string>>(new Set())
 
@@ -284,8 +315,20 @@ const generateDefaultCommitMessage = async (): Promise<string> => {
 
   let revisionMessageMap = new Map<number, string>()
   try {
-    const logs = await api.getSvnLog(props.sourceRepoUrl, 5000)
-    revisionMessageMap = new Map(logs.map((log) => [log.revision, log.message]))
+    // 优先按指定 revision 精确从远程源仓库抓取提交信息，避免被最近 N 条日志截断。
+    const exactLogs = await api.getSvnLogByRevisions(props.sourceRepoUrl, revisions)
+    revisionMessageMap = new Map(exactLogs.map((log) => [log.revision, log.message]))
+
+    // 兼容兜底：若仍有缺失，再尝试一次批量日志。
+    const missingRevisions = revisions.filter((revision) => !revisionMessageMap.has(revision))
+    if (missingRevisions.length > 0) {
+      const logs = await api.getSvnLog(props.sourceRepoUrl, 5000)
+      for (const log of logs) {
+        if (!revisionMessageMap.has(log.revision)) {
+          revisionMessageMap.set(log.revision, log.message)
+        }
+      }
+    }
   } catch (error) {
     console.warn('[MergeProgressDialog] 获取源仓库提交信息失败:', error)
   }
@@ -603,16 +646,90 @@ const handleCommit = async (): Promise<void> => {
     return
   }
 
+  // 构建要确认的仓库列表，包含文件状态信息
+  const successRepos = props.results.filter((r) => r.success && r.targetRepoPath)
+  const repositories: RepositoryToConfirm[] = []
+
+  for (const result of successRepos) {
+    const commitFilePaths = getCommitFilePaths(result)
+    if (commitFilePaths.length > 0) {
+      // 获取仓库的 svn status 来确定文件状态
+      try {
+        const statusResult = await api.getSvnStatus(result.targetRepoPath!)
+        const statusMap = new Map(statusResult.files.map((f) => [f.path, f.status]))
+        
+        const filesWithStatus: FileWithStatus[] = commitFilePaths.map((filePath) => ({
+          path: filePath,
+          status: statusMap.get(filePath) || 'M' // 默认为 M
+        }))
+        
+        repositories.push({
+          targetRepoName: result.targetRepoName,
+          targetRepoPath: result.targetRepoPath!,
+          files: filesWithStatus
+        })
+      } catch (error) {
+        console.error('Failed to get SVN status for', result.targetRepoName, error)
+        // 失败时用默认状态
+        const filesWithStatus: FileWithStatus[] = commitFilePaths.map((filePath) => ({
+          path: filePath,
+          status: 'M'
+        }))
+        repositories.push({
+          targetRepoName: result.targetRepoName,
+          targetRepoPath: result.targetRepoPath!,
+          files: filesWithStatus
+        })
+      }
+    }
+  }
+
+  if (repositories.length === 0) {
+    alert('未找到可提交的文件')
+    return
+  }
+
+  // 显示确认对话框
+  repositoriesToConfirm.value = repositories
+  confirmedReposForCommit.value.clear()
+  // 默认全选
+  for (const repo of repositories) {
+    confirmedReposForCommit.value.add(repo.targetRepoPath)
+  }
+  beforeCommitConfirmVisible.value = true
+}
+
+// 在用户确认要提交的仓库后执行实际提交
+const handleConfirmCommit = async (confirmedRepoPaths: string[]): Promise<void> => {
+  beforeCommitConfirmVisible.value = false
+
   isCommitting.value = true
   const successRepos = props.results.filter((r) => r.success && r.targetRepoPath)
   const errors: string[] = []
-  let successCount = 0
+  
+  // 清空日志并准备收集新的日志
+  commitLogs.value = []
+
+  // 创建一个快速查找 Set
+  const confirmedSet = new Set(confirmedRepoPaths)
 
   for (const result of successRepos) {
+    // 只对确认的仓库进行提交
+    if (!confirmedSet.has(result.targetRepoPath!)) {
+      continue
+    }
+
     try {
       const commitFilePaths = getCommitFilePaths(result)
       if (commitFilePaths.length === 0) {
-        errors.push(`${result.targetRepoName}: 未找到本次 merge 的可提交文件`)
+        const errorMessage = '未找到本次 merge 的可提交文件'
+        errors.push(`${result.targetRepoName}: ${errorMessage}`)
+        commitLogs.value.push({
+          repoName: result.targetRepoName,
+          command: 'svn commit (no files to commit)',
+          output: errorMessage,
+          success: false
+        })
         continue
       }
 
@@ -629,28 +746,44 @@ const handleCommit = async (): Promise<void> => {
           )
         : await api.svnCommit(result.targetRepoPath!, commitMessage.value, commitFilePaths)
 
-      if (commitResult.success) {
-        successCount++
-      } else {
+      // 收集日志
+      commitLogs.value.push({
+        repoName: result.targetRepoName,
+        command: commitResult.command || 'svn commit (command not available)',
+        output: commitResult.output || commitResult.message,
+        success: commitResult.success
+      })
+
+      if (!commitResult.success) {
         errors.push(`${result.targetRepoName}: ${commitResult.message}`)
       }
     } catch (error) {
-      errors.push(
-        `${result.targetRepoName}: ${error instanceof Error ? error.message : '未知错误'}`
-      )
+      const errorMessage = error instanceof Error ? error.message : '未知错误'
+      errors.push(`${result.targetRepoName}: ${errorMessage}`)
+      commitLogs.value.push({
+        repoName: result.targetRepoName,
+        command: 'svn commit (exception occurred)',
+        output: errorMessage,
+        success: false
+      })
     }
   }
 
   isCommitting.value = false
 
-  if (errors.length === 0) {
-    alert(`成功提交 ${successCount} 个仓库`)
+  // 显示日志查看器而不是 alert
+  logViewerVisible.value = true
+}
+
+// 关闭日志查看器
+const handleLogViewerClose = (): void => {
+  logViewerVisible.value = false
+  
+  // 如果有成功的提交，触发成功事件并关闭对话框
+  const hasSuccess = commitLogs.value.some((log) => log.success)
+  if (hasSuccess) {
     emit('commit-success')
     emit('close')
-  } else {
-    alert(
-      `提交完成。成功: ${successCount}, 失败: ${errors.length}\n\n失败详情:\n${errors.join('\n')}`
-    )
   }
 }
 </script>

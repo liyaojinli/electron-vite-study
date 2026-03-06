@@ -15,6 +15,10 @@ const isDark = ref(false)
 
 const applyTheme = (dark: boolean): void => {
   document.documentElement.dataset.theme = dark ? 'dark' : 'light'
+  // 通知主进程更新原生窗口主题（包括标题栏）
+  if (window.theme && window.theme.setTheme) {
+    window.theme.setTheme(dark)
+  }
 }
 
 const toggleTheme = (): void => {
