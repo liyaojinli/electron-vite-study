@@ -25,19 +25,12 @@ const handleToggleTheme = (): void => {
 <template>
   <aside class="app-menu w-56 shrink-0">
     <div class="app-menu-header">
-      <div class="app-menu-title">菜单</div>
-      <button
-        type="button"
-        class="theme-toggle is-compact"
-        :class="props.isDark ? 'is-dark' : ''"
-        :aria-pressed="props.isDark"
-        @click="handleToggleTheme"
-      >
-        <span class="theme-toggle-label">{{ props.isDark ? '深色' : '浅色' }}</span>
-        <span class="theme-toggle-track">
-          <span class="theme-toggle-thumb"></span>
-        </span>
-      </button>
+      <el-switch
+        :model-value="props.isDark"
+        active-text="深色"
+        inactive-text="浅色"
+        @change="handleToggleTheme"
+      />
     </div>
     <nav class="app-menu-list">
       <button
@@ -58,10 +51,44 @@ const handleToggleTheme = (): void => {
 </template>
 
 <style scoped>
+.app-menu-header {
+  display: flex;
+  justify-content: flex-start;
+  padding: 12px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.app-menu-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
 .app-menu-item {
   display: flex;
   align-items: center;
   gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  text-align: left;
+  font-size: 13px;
+  outline: none;
+  transition: all 0.15s;
+  border-left: 3px solid transparent;
+}
+
+.app-menu-item:hover {
+  background: var(--color-background-hover);
+}
+
+.app-menu-item.is-active {
+  background: var(--color-primary-transparent);
+  color: var(--color-primary);
+  border-left-color: var(--color-primary);
 }
 
 .app-menu-item-label {

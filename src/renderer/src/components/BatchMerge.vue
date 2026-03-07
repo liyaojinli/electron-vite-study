@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref, computed, watch } from 'vue'
 import {
-  Play,
+  GitMerge,
   FolderOpen,
   ScrollText,
   LucideCircleCheckBig,
@@ -51,6 +51,10 @@ const selectedRevisions = ref<number[]>([])
 const selectedTargetRepos = ref<Set<string>>(new Set())
 const mergeResults = ref<MergeSessionResult[]>([])
 const isLoading = ref(false)
+const searchLocalRepoKeyword = ref<string>('')
+const searchLocalRepoInputValue = ref<string>('')
+const searchRemoteRepoKeyword = ref<string>('')
+const searchRemoteRepoInputValue = ref<string>('')
 
 // SVN Log Dialog states
 const showSvnLogDialog = ref(false)
@@ -168,6 +172,17 @@ const toggleTargetRepo = (repoUrl: string): void => {
   } else {
     selectedTargetRepos.value.add(repoUrl)
   }
+}
+
+// Check if alias matches search keywords (comma-separated)
+const matchesSearchKeywords = (alias: string, keywords: string): boolean => {
+  if (!keywords.trim()) return true
+  const keywordList = keywords
+    .split(',')
+    .map((k) => k.trim().toLowerCase())
+    .filter((k) => k.length > 0)
+  if (keywordList.length === 0) return true
+  return keywordList.some((keyword) => alias.toLowerCase().includes(keyword))
 }
 
 const handleRepoPanelClick = (repoUrl: string, event: MouseEvent): void => {
@@ -460,22 +475,65 @@ const performMerge = async (): Promise<void> => {
 
       <!-- Source Repository Selection -->
       <div class="merge-section">
-        <h3 class="section-subtitle">步骤 1: 选择远程仓库</h3>
-        <div class="control-group">
-          <label class="control-label">远程仓库:</label>
-          <select v-model="selectedSourceRepo" class="app-select">
-            <option value="">-- 选择一个远程仓库 --</option>
-            <option v-for="repo in remoteRepositories" :key="repo.url" :value="repo.url">
-              {{ repo.alias }} ({{ repo.url }})
-            </option>
-          </select>
+        <h3 class="section-subtitle">
+          <span><strong>1: 选择远程仓库</strong></span>
+          <div class="subtitle-actions">
+            <input
+              v-model="searchRemoteRepoInputValue"
+              type="text"
+              placeholder="搜索别名"
+              class="local-repo-search-input"
+              @keyup.enter="searchRemoteRepoKeyword = searchRemoteRepoInputValue"
+            />
+          </div>
+        </h3>
+        <div class="source-repos-grid">
+          <div
+            v-for="repo in remoteRepositories.filter((r) =>
+              matchesSearchKeywords(r.alias, searchRemoteRepoKeyword)
+            )"
+            :key="repo.url"
+            class="source-repo-panel"
+            :class="{ 'is-selected': selectedSourceRepo === repo.url }"
+            style="cursor: pointer"
+            @click="selectedSourceRepo = repo.url"
+          >
+            <div class="panel-header">
+              <div class="panel-top-row" style="display: flex; align-items: center">
+                <input
+                  type="radio"
+                  class="repo-radio"
+                  :checked="selectedSourceRepo === repo.url"
+                  @change="selectedSourceRepo = repo.url"
+                />
+                <span class="source-repo-label">{{ repo.alias }}</span>
+              </div>
+            </div>
+            <div class="panel-body">
+              <div class="repo-path-row">
+                <span class="repo-path-label">远程地址:</span>
+                <el-tooltip
+                  :content="repo.url"
+                  placement="top"
+                  :show-after="300"
+                  :disabled="!repo.url"
+                  popper-class="commit-message-tooltip"
+                  effect="light"
+                  :show-arrow="false"
+                >
+                  <span class="repo-path-value">{{ repo.url }}</span>
+                </el-tooltip>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
       <!-- SVN Logs Section -->
       <div v-if="selectedSourceRepo" class="merge-section">
-        <h3 class="section-subtitle">步骤 2: 选择要合并的提交</h3>
+        <h3 class="section-subtitle"><strong>2: 选择要合并的提交</strong></h3>
         <SvnRemoteLogViewer
+          :key="selectedSourceRepo"
           v-model:selected-revisions="selectedRevisions"
           :visible="Boolean(selectedSourceRepo)"
           :repo-url="selectedSourceRepo"
@@ -489,25 +547,34 @@ const performMerge = async (): Promise<void> => {
       <!-- Target Repositories Selection -->
       <div v-if="selectedSourceRepo" class="merge-section">
         <h3 class="section-subtitle">
-          <span>步骤 3: 选择本地仓库</span>
+          <span><strong>3: 选择本地仓库</strong></span>
           <div class="subtitle-actions">
-            <div class="panel-action-group">
-              <button
-                type="button"
-                class="update-btn"
-                :title="isLoading ? '合并中...' : '执行合并'"
-                :disabled="!canMerge || isLoading"
-                @click="performMerge"
-              >
-                <Play :size="16" :class="{ 'is-spinning': isLoading }" />
-              </button>
-              <div class="panel-action-label">{{ isLoading ? '合并中...' : '合并' }}</div>
-            </div>
+            <input
+              v-model="searchLocalRepoInputValue"
+              type="text"
+              placeholder="搜索别名"
+              class="local-repo-search-input"
+              @keyup.enter="searchLocalRepoKeyword = searchLocalRepoInputValue"
+            />
+            <button
+              type="button"
+              class="merge-btn"
+              :title="isLoading ? '合并中...' : '执行合并'"
+              :disabled="!canMerge || isLoading"
+              @click="performMerge"
+            >
+              <GitMerge :size="16" :class="{ 'is-spinning': isLoading }" />
+              <span>{{ isLoading ? '合并中...' : '合并' }}</span>
+            </button>
           </div>
         </h3>
         <div class="target-repos-grid">
           <div
-            v-for="repo in localRepositories.filter((r) => r.url !== selectedSourceRepo)"
+            v-for="repo in localRepositories.filter(
+              (r) =>
+                r.url !== selectedSourceRepo &&
+                matchesSearchKeywords(r.alias, searchLocalRepoKeyword)
+            )"
             :key="repo.url"
             class="target-repo-panel"
             style="cursor: pointer"
@@ -521,17 +588,7 @@ const performMerge = async (): Promise<void> => {
                   :checked="selectedTargetRepos.has(repo.url)"
                   @change="toggleTargetRepo(repo.url)"
                 />
-                <el-tooltip
-                  :content="repo.alias"
-                  placement="top"
-                  :show-after="300"
-                  :disabled="!repo.alias"
-                  popper-class="commit-message-tooltip"
-                  effect="light"
-                  :show-arrow="false"
-                >
-                  <span class="repo-alias">{{ repo.alias }}</span>
-                </el-tooltip>
+                <span class="target-repo-label">{{ repo.alias }}</span>
                 <span v-if="getMergeResultForRepo(repo.url)" class="merge-status-icon">
                   <span
                     v-if="getRepoMergeStatus(repo.url) === 'success'"
@@ -683,12 +740,13 @@ const performMerge = async (): Promise<void> => {
 }
 
 .section-subtitle {
-  font-size: 11px;
-  color: var(--color-text-secondary);
+  font-size: 16px;
+  font-weight: bold;
+  color: var(--color-text-primary);
   margin-top: 2px;
   user-select: none;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+  text-transform: none;
+  letter-spacing: 0px;
 }
 
 .merge-section {
@@ -719,12 +777,85 @@ const performMerge = async (): Promise<void> => {
 .subtitle-actions {
   display: flex;
   align-items: center;
+  gap: 12px;
+}
+
+.local-repo-search-input {
+  padding: 6px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-background-primary);
+  color: var(--color-text-primary);
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.2s;
+  width: 200px;
+}
+
+.local-repo-search-input:focus {
+  border-color: var(--color-primary);
+}
+
+.local-repo-search-input::placeholder {
+  color: var(--color-text-secondary);
 }
 
 /* 使用现有的 .update-btn / .panel-action-label 样式来匹配更新/还原按钮 */
 
 .panel-action-label {
   font-size: 12px;
+}
+
+.merge-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 20px;
+  border: 2px solid #ffb800;
+  border-radius: 6px;
+  background: #ffc410;
+  color: #333333;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  outline: none;
+  transition: all 0.2s;
+  flex-shrink: 0;
+  box-shadow: 0 3px 10px rgba(255, 196, 16, 0.4);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.merge-btn:hover:not(:disabled) {
+  background: #ffa500;
+  border-color: #ff9500;
+  box-shadow:
+    0 6px 16px rgba(255, 165, 0, 0.6),
+    inset 0 0 8px rgba(255, 255, 255, 0.3);
+  transform: translateY(-1px);
+}
+
+.merge-btn:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: 0 2px 6px rgba(255, 165, 0, 0.4);
+}
+
+.merge-btn:disabled {
+  background: #d4d4d8;
+  border-color: #bdbdbe;
+  color: #909399;
+  cursor: not-allowed;
+  opacity: 0.6;
+  box-shadow: none;
+  text-transform: none;
+}
+
+.merge-btn svg {
+  flex-shrink: 0;
+}
+
+.merge-btn .is-spinning {
+  animation: spin 1s linear infinite;
 }
 
 .merge-section > div:not(.section-subtitle):nth-of-type(n + 2) {
@@ -1101,6 +1232,32 @@ const performMerge = async (): Promise<void> => {
   padding: 16px;
 }
 
+.source-repos-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+  padding: 16px;
+}
+
+.source-repo-panel {
+  border: 2px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-background-primary);
+  overflow: hidden;
+  transition: all 150ms ease;
+}
+
+.source-repo-panel:hover {
+  border-color: var(--el-color-primary);
+  box-shadow: 0 2px 8px rgba(10, 132, 255, 0.1);
+}
+
+.source-repo-panel.is-selected {
+  border-color: var(--el-color-primary);
+  background: rgba(10, 132, 255, 0.05);
+  box-shadow: 0 2px 12px rgba(10, 132, 255, 0.15);
+}
+
 .target-repo-panel {
   border: 1px solid var(--color-border);
   border-radius: 8px;
@@ -1139,11 +1296,44 @@ const performMerge = async (): Promise<void> => {
   height: 18px;
 }
 
+.repo-radio {
+  flex-shrink: 0;
+  cursor: pointer;
+  width: 18px;
+  height: 18px;
+}
+
 .repo-alias {
   flex: 1;
   font-weight: 600;
   color: var(--color-text-primary);
   font-size: 15px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-repo-label {
+  flex: 1;
+  font-weight: 600;
+  font-size: 15px;
+  padding: 4px 10px;
+  background: #34c759;
+  color: white;
+  border-radius: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.target-repo-label {
+  flex: 1;
+  font-weight: 600;
+  font-size: 15px;
+  padding: 4px 10px;
+  background: #007aff;
+  color: white;
+  border-radius: 4px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

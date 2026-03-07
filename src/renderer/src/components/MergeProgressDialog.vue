@@ -101,6 +101,40 @@
                 </div>
               </div>
               
+              <!-- 错误或消息提示（只在没有 revision 详细消息时显示） -->
+              <div
+                v-if="
+                  (!result.success || result.message) &&
+                  (!result.revisions ||
+                    !result.revisions.some((r) => r.message && r.status !== 'pending'))
+                "
+                :class="['result-message', result.success ? 'message-info' : 'message-error']"
+              >
+                {{ result.message }}
+              </div>
+
+              <!-- 版本详细信息（显示每个版本的消息） -->
+              <div
+                v-if="
+                  result.revisions &&
+                  result.revisions.some((r) => r.message && r.status !== 'pending')
+                "
+                class="revisions-messages"
+              >
+                <div
+                  v-for="rev in result.revisions.filter((r) => r.message && r.status !== 'pending')"
+                  :key="rev.revision"
+                  :class="[
+                    'revision-message',
+                    `status-${rev.status}`,
+                    { 'is-error': rev.status === 'failed' }
+                  ]"
+                >
+                  <span class="revision-label">r{{ rev.revision }}:</span>
+                  <span class="revision-text">{{ rev.message }}</span>
+                </div>
+              </div>
+
               <div v-if="result.files && result.files.length" class="file-list">
                 <a
                   v-for="file in result.files"
@@ -137,7 +171,14 @@
                   </span>
                 </a>
               </div>
-              <div v-else class="result-file-empty">无文件</div>
+              <div
+                v-else-if="
+                  !result.message && (!result.revisions || !result.revisions.some((r) => r.message))
+                "
+                class="result-file-empty"
+              >
+                无文件
+              </div>
             </div>
           </div>
         </div>
@@ -171,14 +212,12 @@
       @resolved="handleConflictResolved"
     />
 
-    <!-- SVN Diff Viewer ReadOnly for non-conflicts -->
-    <SvnDiffViewerReadOnly
-      :visible="diffViewerReadOnlyVisible"
+    <!-- SVN Diff Viewer for non-conflicts (Working Copy vs HEAD) -->
+    <SvnDiffViewer
+      :visible="diffViewerVisible"
       :repo-path="selectedRepoPath"
       :file-path="selectedFilePath"
-      :base-revision="diffViewerBaseRevision"
-      :target-revision="diffViewerTargetRevision"
-      @close="diffViewerReadOnlyVisible = false"
+      @close="diffViewerVisible = false"
     />
 
     <!-- SVN Before Commit Confirm Dialog -->
@@ -199,7 +238,7 @@ import { ref, computed, watch } from 'vue'
 import { ChevronDown, ChevronRight } from 'lucide-vue-next'
 import { LoaderCircle } from 'lucide-vue-next'
 import SvnConflictMerge from './SvnConflictMerge.vue'
-import SvnDiffViewerReadOnly from './SvnDiffViewerReadOnly.vue'
+import SvnDiffViewer from './SvnDiffViewer.vue'
 import SvnBeforeCommitConfirm from './SvnBeforeCommitConfirm.vue'
 import SvnLogViewer, { type SvnCommitLog } from './SvnLogViewer.vue'
 
@@ -236,6 +275,11 @@ const getResultStatusClass = (result: MergeSessionResult): string => {
 
 const getResultStatusText = (result: MergeSessionResult): string => {
   if (result.isMerging) return '合并中'
+  // 如果 success 为 false 且没有完成，表示合并失败
+  if (!result.success && !result.allCompleted) return '合并失败'
+  // 检查是否有冲突状态的版本（包括未完成的情况）
+  const hasConflict = result.revisions && result.revisions.some((r) => r.status === 'conflict')
+  if (hasConflict) return '部分冲突'
   if (result.allCompleted) {
     // 检查是否有未解决的冲突
     const hasUnresolved = result.revisions.some(
@@ -368,11 +412,9 @@ const canCommit = computed(() => {
 })
 
 const conflictMergeVisible = ref(false)
-const diffViewerReadOnlyVisible = ref(false)
+const diffViewerVisible = ref(false)
 const selectedRepoPath = ref('')
 const selectedFilePath = ref('')
-const diffViewerBaseRevision = ref(0)
-const diffViewerTargetRevision = ref(0)
 const panelExpandedState = ref<Record<string, boolean>>({})
 
 const getPanelKey = (result: MergeSessionResult): string => {
@@ -482,31 +524,9 @@ const handleFileClick = (result: MergeSessionResult, fileEntry: string): void =>
     selectedRepoPath.value = result.targetRepoPath
     conflictMergeVisible.value = true
   } else {
-    // 对于非冲突文件，显示服务端两个版本之间的差异
-    // 使用 sourceRepoUrl 和选中的 revisions
-    if (!props.sourceRepoUrl || !props.selectedRevisions || props.selectedRevisions.length === 0) {
-      alert('无法获取版本信息')
-      return
-    }
-    
-    // 显示整个合并范围的变更：从最小 revision 的前一个版本到最大 revision
-    const minRevision = Math.min(...props.selectedRevisions)
-    const maxRevision = Math.max(...props.selectedRevisions)
-    const baseRevision = minRevision - 1
-    const targetRevision = maxRevision
-    
-    console.log('[MergeProgressDialog] 查看文件差异:', {
-      sourceRepoUrl: props.sourceRepoUrl,
-      filePath,
-      baseRevision,
-      targetRevision,
-      selectedRevisions: props.selectedRevisions
-    })
-    
-    selectedRepoPath.value = props.sourceRepoUrl
-    diffViewerBaseRevision.value = baseRevision
-    diffViewerTargetRevision.value = targetRevision
-    diffViewerReadOnlyVisible.value = true
+    // 对于非冲突文件，显示本地工作副本与服务端最新版本(HEAD)的差异。
+    selectedRepoPath.value = result.targetRepoPath
+    diffViewerVisible.value = true
   }
 }
 
@@ -1004,6 +1024,73 @@ const handleLogViewerClose = (): void => {
   color: var(--color-text-secondary);
   font-size: 11px;
   padding: 8px 0;
+}
+
+.result-message {
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  border-radius: 4px;
+  font-size: 13px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.result-message.message-error {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #ef4444;
+}
+
+.result-message.message-info {
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  color: #3b82f6;
+}
+
+.revisions-messages {
+  margin-bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.revision-message {
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.4;
+  display: flex;
+  gap: 8px;
+  background: var(--color-background-secondary);
+  border-left: 3px solid var(--color-border);
+}
+
+.revision-message.status-failed,
+.revision-message.is-error {
+  background: rgba(239, 68, 68, 0.05);
+  border-left-color: #ef4444;
+}
+
+.revision-message.status-conflict {
+  background: rgba(234, 179, 8, 0.05);
+  border-left-color: #eab308;
+}
+
+.revision-message.status-success {
+  background: rgba(34, 197, 94, 0.05);
+  border-left-color: #22c55e;
+}
+
+.revision-label {
+  font-weight: 600;
+  font-family: monospace;
+  color: var(--color-text-secondary);
+  flex-shrink: 0;
+}
+
+.revision-text {
+  color: var(--color-text-primary);
+  word-break: break-word;
 }
 .merge-dialog-backdrop {
   position: fixed;

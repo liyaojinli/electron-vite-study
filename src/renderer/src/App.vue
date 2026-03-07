@@ -10,7 +10,7 @@ const menuItems = [
   { id: 'local-repository', label: '本地仓库设置' },
   { id: 'batch-merge', label: '批量合并' }
 ]
-const activeMenuId = ref(menuItems[0].id)
+const activeMenuId = ref('batch-merge')
 const isDark = ref(false)
 
 const applyTheme = (dark: boolean): void => {

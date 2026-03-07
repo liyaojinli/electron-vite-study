@@ -145,6 +145,100 @@ const parseSvnLogXml = (xml: string): SvnLogEntry[] => {
   return logs
 }
 
+const normalizeRemotePathPart = (value: string): string => {
+  return value.replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '')
+}
+
+const joinRemoteUrl = (baseUrl: string, pathPart: string): string => {
+  const normalizedBase = baseUrl.replace(/\/+$/, '')
+  const normalizedPath = normalizeRemotePathPart(pathPart)
+  return normalizedPath ? `${normalizedBase}/${normalizedPath}` : normalizedBase
+}
+
+const getRepoSubPathFromRoot = (repoUrl: string, repoRootUrl: string): string => {
+  try {
+    const repo = new URL(repoUrl)
+    const root = new URL(repoRootUrl)
+    const repoPathname = repo.pathname.replace(/\/+$/, '')
+    const rootPathname = root.pathname.replace(/\/+$/, '')
+    if (repoPathname === rootPathname) return ''
+    if (repoPathname.startsWith(`${rootPathname}/`)) {
+      return normalizeRemotePathPart(repoPathname.slice(rootPathname.length))
+    }
+  } catch {
+    // Ignore URL parse failures and fallback to empty sub-path.
+  }
+  return ''
+}
+
+const buildRemoteFileUrlCandidates = (
+  repoUrl: string,
+  repoRootUrl: string,
+  filePath: string
+): string[] => {
+  const candidates: string[] = []
+  const seen = new Set<string>()
+
+  const addCandidate = (candidate: string): void => {
+    if (!candidate || seen.has(candidate)) return
+    seen.add(candidate)
+    candidates.push(candidate)
+  }
+
+  if (/^(https?|svn|file):\/\//i.test(filePath)) {
+    addCandidate(filePath)
+    return candidates
+  }
+
+  const normalizedFilePath = filePath.replace(/\\/g, '/')
+  const filePathNoLeadingSlash = normalizedFilePath.replace(/^\/+/, '')
+  const repoSubPath = getRepoSubPathFromRoot(repoUrl, repoRootUrl)
+
+  // Candidate 1: absolute path from repository root (standard svn log --verbose format)
+  if (normalizedFilePath.startsWith('/')) {
+    addCandidate(`${repoRootUrl.replace(/\/+$/, '')}${normalizedFilePath}`)
+  }
+
+  // Candidate 2: path relative to selected repository URL
+  addCandidate(joinRemoteUrl(repoUrl, filePathNoLeadingSlash))
+
+  // Candidate 3: root + repo sub-path + file path (handles sub-repo scoped logs)
+  if (repoSubPath) {
+    addCandidate(joinRemoteUrl(repoRootUrl, `${repoSubPath}/${filePathNoLeadingSlash}`))
+  }
+
+  // Candidate 4: root + relative file path (handles missing leading slash)
+  addCandidate(joinRemoteUrl(repoRootUrl, filePathNoLeadingSlash))
+
+  return candidates
+}
+
+const execRemoteSvnCat = (
+  repoUrl: string,
+  repoRootUrl: string,
+  filePath: string,
+  revision?: string
+): string => {
+  const candidates = buildRemoteFileUrlCandidates(repoUrl, repoRootUrl, filePath)
+  let lastError: unknown
+
+  for (const candidate of candidates) {
+    const cmd = revision ? `svn cat -r ${revision} "${candidate}"` : `svn cat "${candidate}"`
+    console.log('[getSvnFileContent] Executing:', cmd)
+    try {
+      return execSync(cmd, { encoding: 'utf-8' })
+    } catch (error) {
+      lastError = error
+      console.warn('[getSvnFileContent] Candidate failed:', candidate)
+    }
+  }
+
+  if (lastError instanceof Error) {
+    throw lastError
+  }
+  throw new Error('无法定位远程文件地址')
+}
+
 // ========== API 定义区（只在这里添加新 API）==========
 export const apiHandlers = {
   // Remote Repository APIs
@@ -305,11 +399,23 @@ export const apiHandlers = {
   },
 
   svnUpdate: async (
-    repoPath: string
+    repoPath: string,
+    filePaths?: string[]
   ): Promise<{ success: boolean; logs: string[]; message: string }> => {
     try {
-      const cmd = `svn update "${repoPath}"`
-      const output = execSync(cmd, { encoding: 'utf-8' })
+      let cmd: string
+      if (filePaths && filePaths.length > 0) {
+        // Update specific files only
+        const escapedPaths = filePaths.map((p) => `"${p}"`).join(' ')
+        cmd = `svn update ${escapedPaths}`
+        console.log('[svnUpdate] Updating specific files:', filePaths)
+      } else {
+        // Update entire repository
+        cmd = `svn update "${repoPath}"`
+        console.log('[svnUpdate] Updating entire repository')
+      }
+      
+      const output = execSync(cmd, { encoding: 'utf-8', cwd: repoPath })
       const logs = output
         .trim()
         .split('\n')
@@ -538,14 +644,8 @@ export const apiHandlers = {
 
       if (!revision) {
         if (isUrl) {
-          // For remote URL without revision, get HEAD
-          // Use repository root URL + file path (which starts with /)
-          const fullUrl = filePath.startsWith('/')
-            ? repoRootUrl + filePath
-            : `${repoRootUrl}/${filePath}`
-          const cmd = `svn cat "${fullUrl}"`
-          console.log('[getSvnFileContent] Executing:', cmd)
-          const content = execSync(cmd, { encoding: 'utf-8' })
+          // For remote URL without revision, try multiple URL resolution strategies.
+          const content = execRemoteSvnCat(repoPath, repoRootUrl, filePath)
           return {
             success: true,
             content,
@@ -602,22 +702,16 @@ export const apiHandlers = {
       }
 
       // For BASE, HEAD or numeric revisions
-      let cmd: string
       let output: string
       if (isUrl) {
-        // For remote URL, use repository root URL + file path
-        const fullUrl = filePath.startsWith('/')
-          ? repoRootUrl + filePath
-          : `${repoRootUrl}/${filePath}`
-        cmd = `svn cat -r ${revision} "${fullUrl}"`
-        console.log('[getSvnFileContent] Executing:', cmd)
-        output = execSync(cmd, { encoding: 'utf-8' })
+        // For remote URL, try multiple URL resolution strategies.
+        output = execRemoteSvnCat(repoPath, repoRootUrl, filePath, revision)
       } else {
         // For local working copy, use cwd option
         const relativePath = path.isAbsolute(filePath)
           ? path.relative(repoPath, filePath)
           : filePath
-        cmd = `svn cat -r ${revision} "${relativePath}"`
+        const cmd = `svn cat -r ${revision} "${relativePath}"`
         console.log('[getSvnFileContent] Executing:', cmd)
         output = execSync(cmd, { encoding: 'utf-8', cwd: repoPath })
       }
@@ -1083,10 +1177,21 @@ export const apiHandlers = {
       throw new Error('未指定需要合并的版本')
     }
 
+    console.log('[performBatchMerge] 开始批量合并')
+    console.log('[performBatchMerge] 源仓库:', sourceRepo.alias, sourceRepo.url)
+    console.log('[performBatchMerge] 目标仓库数量:', targetRepos.length)
+    console.log('[performBatchMerge] 版本列表:', sortedRevisions)
+
     // 对每个仓库执行 performSingleMerge（并行）
-    return Promise.all(
-      targetRepos.map((repo) => apiHandlers.performSingleMerge(sourceRepo, repo, sortedRevisions))
+    const results = await Promise.all(
+      targetRepos.map((repo) => {
+        console.log('[performBatchMerge] 开始合并到仓库:', repo.alias, repo.url)
+        return apiHandlers.performSingleMerge(sourceRepo, repo, sortedRevisions)
+      })
     )
+
+    console.log('[performBatchMerge] 批量合并完成，结果数量:', results.length)
+    return results
   },
 
   performSingleMerge: async (
@@ -1097,6 +1202,45 @@ export const apiHandlers = {
     const sortedRevisions = Array.from(new Set(revisions)).sort((a, b) => a - b)
     if (sortedRevisions.length === 0) {
       throw new Error('未指定需要合并的版本')
+    }
+
+    // 在 merge 前，先获取要合并的 revisions 影响的文件列表，并对这些文件执行 update
+    try {
+      console.log('[performSingleMerge] 获取影响文件列表...')
+      const changedFilesGroups = await apiHandlers.getSvnChangedFiles(
+        sourceRepo.url,
+        sortedRevisions
+      )
+      
+      // 收集所有影响的文件路径（去重）
+      const affectedFilePaths = new Set<string>()
+      for (const group of changedFilesGroups) {
+        for (const file of group.files) {
+          // 跳过删除的文件（D 状态），因为删除的文件不需要 update
+          if (file.status !== 'D') {
+            affectedFilePaths.add(file.path)
+          }
+        }
+      }
+      
+      if (affectedFilePaths.size > 0) {
+        const filePaths = Array.from(affectedFilePaths)
+        console.log(`[performSingleMerge] 准备 update ${filePaths.length} 个影响文件...`)
+        
+        // 对这些文件执行 update
+        const updateResult = await apiHandlers.svnUpdate(targetRepo.url, filePaths)
+        if (!updateResult.success) {
+          console.warn('[performSingleMerge] 文件 update 失败:', updateResult.message)
+          // 即使 update 失败，也继续尝试 merge
+        } else {
+          console.log('[performSingleMerge] 影响文件 update 成功')
+        }
+      } else {
+        console.log('[performSingleMerge] 没有需要 update 的文件')
+      }
+    } catch (updateError) {
+      console.warn('[performSingleMerge] 预 update 失败，继续执行 merge:', updateError)
+      // 即使预 update 失败，也继续尝试 merge
     }
 
     // 初始化所有版本状态为 pending
@@ -1115,10 +1259,18 @@ export const apiHandlers = {
 
       try {
         const mergeCmd = `svn merge --accept=postpone -c ${currentRevision} "${sourceRepo.url}" "${targetRepo.url}"`
-        await execAsync(mergeCmd, {
+        console.log('[performSingleMerge] 执行 merge 命令:', mergeCmd)
+        console.log('[performSingleMerge] 工作目录:', targetRepo.url)
+        
+        const mergeResult = await execAsync(mergeCmd, {
           cwd: targetRepo.url,
           maxBuffer: 10 * 1024 * 1024
         })
+        
+        console.log('[performSingleMerge] Merge stdout:', mergeResult.stdout)
+        if (mergeResult.stderr) {
+          console.log('[performSingleMerge] Merge stderr:', mergeResult.stderr)
+        }
 
         // 获取受影响的文件列表
         const statusResult = await apiHandlers.getSvnStatus(targetRepo.url)
@@ -1127,6 +1279,12 @@ export const apiHandlers = {
           .filter((f) => ['C', 'M', 'A', 'D', 'R'].some((st) => f.startsWith(st)))
 
         const hasConflict = statusResult.files.some((f) => f.status === 'C')
+        console.log(
+          '[performSingleMerge] Merge 结果: hasConflict=',
+          hasConflict,
+          'affectedFiles=',
+          affectedFiles.length
+        )
 
         // 更新当前版本的状态
         revisionStates[currentIndex].status = hasConflict ? 'conflict' : 'success'
@@ -1141,7 +1299,8 @@ export const apiHandlers = {
 
         // 如果有冲突，停止并返回
         if (hasConflict) {
-          return {
+          console.log('[performSingleMerge] 检测到冲突，停止处理')
+          const conflictResult = {
             targetRepoName: targetRepo.alias,
             targetRepoUrl: targetRepo.url,
             targetRepoPath: targetRepo.url,
@@ -1154,11 +1313,23 @@ export const apiHandlers = {
             files: Array.from(allFiles),
             isMerging: false
           }
+          console.log(
+            '[performSingleMerge] 返回冲突结果: 冲突文件数=',
+            affectedFiles.filter((f) => f.startsWith('C')).length
+          )
+          return conflictResult
         }
 
         // 成功，继续处理下一个版本
+        console.log('[performSingleMerge] 版本', currentRevision, '合并成功，继续下一个版本')
         currentIndex++
       } catch (error) {
+        console.error('[performSingleMerge] Merge 失败 for revision', currentRevision, ':', error)
+        if (error instanceof Error) {
+          console.error('[performSingleMerge] 错误信息:', error.message)
+          console.error('[performSingleMerge] 错误堆栈:', error.stack)
+        }
+        
         // 即使出错，也尝试获取文件列表
         let affectedFiles: string[] = []
         let hasConflict = false
@@ -1168,8 +1339,14 @@ export const apiHandlers = {
             .map((f) => `${f.status}  ${f.path}`)
             .filter((f) => ['C', 'M', 'A', 'D', 'R'].some((st) => f.startsWith(st)))
           hasConflict = statusResult.files.some((f) => f.status === 'C')
-        } catch {
-          // 忽略 getSvnStatus 的错误
+          console.log(
+            '[performSingleMerge] Status 检查结果: hasConflict=',
+            hasConflict,
+            'files=',
+            affectedFiles.length
+          )
+        } catch (statusError) {
+          console.error('[performSingleMerge] getSvnStatus 也失败了:', statusError)
         }
 
         if (hasConflict) {
@@ -1200,13 +1377,15 @@ export const apiHandlers = {
         // 真正的失败，停止处理
         revisionStates[currentIndex].status = 'failed'
         revisionStates[currentIndex].message = error instanceof Error ? error.message : '未知错误'
+        
+        console.error('[performSingleMerge] 版本', currentRevision, '合并失败，停止处理')
 
         const allFiles = new Set<string>()
         revisionStates.forEach((rev) => {
           rev.files?.forEach((f) => allFiles.add(f))
         })
 
-        return {
+        const failureResult = {
           targetRepoName: targetRepo.alias,
           targetRepoUrl: targetRepo.url,
           targetRepoPath: targetRepo.url,
@@ -1219,16 +1398,20 @@ export const apiHandlers = {
           files: Array.from(allFiles),
           isMerging: false
         }
+        
+        console.log('[performSingleMerge] 返回失败结果:', JSON.stringify(failureResult, null, 2))
+        return failureResult
       }
     }
 
     // 所有版本都成功处理完了
+    console.log('[performSingleMerge] 所有版本都已成功处理完成')
     const allFiles = new Set<string>()
     revisionStates.forEach((rev) => {
       rev.files?.forEach((f) => allFiles.add(f))
     })
 
-    return {
+    const successResult = {
       targetRepoName: targetRepo.alias,
       targetRepoUrl: targetRepo.url,
       targetRepoPath: targetRepo.url,
@@ -1241,6 +1424,9 @@ export const apiHandlers = {
       files: Array.from(allFiles),
       isMerging: false
     }
+    
+    console.log('[performSingleMerge] 返回成功结果: 总文件数=', allFiles.size)
+    return successResult
   },
 
   // 继续 merge 下一个版本（在冲突解决后调用）

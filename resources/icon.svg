@@ -1,0 +1,58 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <!-- 背景 -->
+  <rect width="512" height="512" fill="#f5f7fa" rx="0"/>
+  
+  <!-- 主图标背景圆形 -->
+  <circle cx="256" cy="256" r="220" fill="#ffffff" stroke="#007aff" stroke-width="3"/>
+  
+  <!-- 左上分支 -->
+  <g>
+    <circle cx="120" cy="140" r="24" fill="#007aff"/>
+    <line x1="120" y1="166" x2="120" y2="220" stroke="#007aff" stroke-width="8" stroke-linecap="round"/>
+  </g>
+  
+  <!-- 右上分支 -->
+  <g>
+    <circle cx="340" cy="140" r="24" fill="#007aff"/>
+    <line x1="340" y1="166" x2="340" y2="220" stroke="#007aff" stroke-width="8" stroke-linecap="round"/>
+  </g>
+  
+  <!-- 左下分支 -->
+  <g>
+    <circle cx="140" cy="360" r="24" fill="#ffc410"/>
+    <line x1="140" y1="286" x2="140" y2="336" stroke="#ffc410" stroke-width="8" stroke-linecap="round"/>
+  </g>
+  
+  <!-- 右下分支 -->
+  <g>
+    <circle cx="360" cy="360" r="24" fill="#ffc410"/>
+    <line x1="360" y1="286" x2="360" y2="336" stroke="#ffc410" stroke-width="8" stroke-linecap="round"/>
+  </g>
+  
+  <!-- 中间合并枢纽 -->
+  <circle cx="256" cy="256" r="32" fill="#0a6cdb"/>
+  
+  <!-- 左上到中心的曲线 -->
+  <path d="M 120 220 Q 180 240 224 240" 
+        stroke="#007aff" stroke-width="8" fill="none" stroke-linecap="round"/>
+  
+  <!-- 右上到中心的曲线 -->
+  <path d="M 340 220 Q 280 240 288 240" 
+        stroke="#007aff" stroke-width="8" fill="none" stroke-linecap="round"/>
+  
+  <!-- 中心到左下的曲线 -->
+  <path d="M 224 272 Q 180 276 140 286" 
+        stroke="#ffc410" stroke-width="8" fill="none" stroke-linecap="round"/>
+  
+  <!-- 中心到右下的曲线 -->
+  <path d="M 288 272 Q 320 276 360 286" 
+        stroke="#ffc410" stroke-width="8" fill="none" stroke-linecap="round"/>
+  
+  <!-- 中心合并箭头（向下） -->
+  <path d="M 256 288 L 256 320 
+           M 244 312 L 256 320 L 268 312" 
+        stroke="#ffffff" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  
+  <!-- 装饰性文字或标记 -->
+  <text x="256" y="420" font-size="36" font-weight="bold" text-anchor="middle" fill="#007aff" font-family="Arial, sans-serif">SVN</text>
+</svg>

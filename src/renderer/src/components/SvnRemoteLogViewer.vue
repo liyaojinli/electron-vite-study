@@ -239,13 +239,9 @@ watch(
 
 watch(
   () => [props.visible, props.repoUrl],
-  async ([visible, repoUrl], prev) => {
-    if (!visible) return
-
-    const [prevVisible, prevRepoUrl] = prev || []
-    // 首次加载或 repoUrl 变化时加载日志
-    const shouldReload = prevVisible === undefined || repoUrl !== prevRepoUrl
-    if (shouldReload) {
+  async ([visible, repoUrl]) => {
+    // 组件初始化或 repoUrl 变化时重新加载日志
+    if (visible && repoUrl) {
       await loadLogs()
     }
   },

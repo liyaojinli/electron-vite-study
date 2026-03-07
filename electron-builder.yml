@@ -1,5 +1,5 @@
-appId: com.electron.app
-productName: electron-vite-study
+appId: com.svnmerge.app
+productName: SVN批量合并工具
 directories:
   buildResources: build
 files:
@@ -12,8 +12,20 @@ files:
 asarUnpack:
   - resources/**
 win:
-  executableName: electron-vite-study
+  executableName: svn-merge-tool
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: resources/icon.png
 nsis:
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+  icon: resources/icon.icns
+  category: public.app-category.developer-tools
   artifactName: ${name}-${version}-setup.${ext}
   shortcutName: ${productName}
   uninstallDisplayName: ${productName}

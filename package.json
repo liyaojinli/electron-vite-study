@@ -18,6 +18,7 @@
     "build:unpack": "npm run build && electron-builder --dir",
     "build:win": "npm run build && electron-builder --win",
     "build:mac": "npm run build && electron-builder --mac",
+    "build:release": "./build-release.sh"
     "build:linux": "npm run build && electron-builder --linux"
   },
   "dependencies": {
@@ -42,6 +43,7 @@
     "eslint": "^9.39.1",
     "eslint-plugin-vue": "^10.6.2",
     "prettier": "^3.7.4",
+    "sharp": "^0.34.5",
     "tailwindcss": "^4.1.0",
     "typescript": "^5.9.3",
     "vite": "^7.2.6",

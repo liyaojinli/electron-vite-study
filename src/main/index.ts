@@ -2,8 +2,11 @@ import { app, shell, BrowserWindow, ipcMain, nativeTheme } from 'electron'
 import { join } from 'path'
 import fs from 'fs/promises'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
-import icon from '../../resources/icon.png?asset'
+import iconPng from '../../resources/icon.png?asset'
+import iconIcns from '../../resources/icon.icns?asset'
 import { registerApiHandlers } from './api'
+
+const icon = process.platform === 'darwin' ? iconIcns : iconPng
 
 type WindowState = {
   width: number
@@ -78,7 +81,7 @@ async function createWindow(): Promise<void> {
     show: false,
     autoHideMenuBar: true,
     backgroundColor: getInitialBackgroundColor(),
-    ...(process.platform === 'linux' ? { icon } : {}),
+    icon: icon,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
