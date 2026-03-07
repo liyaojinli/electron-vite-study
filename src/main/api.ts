@@ -523,10 +523,26 @@ export const apiHandlers = {
       // Check if repoPath is a URL (remote) or local path
       const isUrl = /^(https?|svn):\/\//i.test(repoPath)
 
+      // For remote URLs, get the repository root URL
+      let repoRootUrl = repoPath
+      if (isUrl) {
+        try {
+          const infoCmd = `svn info --show-item repos-root-url "${repoPath}"`
+          repoRootUrl = execSync(infoCmd, { encoding: 'utf-8' }).trim()
+          console.log('[getSvnFileContent] Repository root URL:', repoRootUrl)
+        } catch {
+          console.warn('[getSvnFileContent] Failed to get repo root URL, using repoPath as-is')
+          repoRootUrl = repoPath
+        }
+      }
+
       if (!revision) {
         if (isUrl) {
           // For remote URL without revision, get HEAD
-          const fullUrl = repoPath.endsWith('/') ? repoPath + filePath : `${repoPath}/${filePath}`
+          // Use repository root URL + file path (which starts with /)
+          const fullUrl = filePath.startsWith('/')
+            ? repoRootUrl + filePath
+            : `${repoRootUrl}/${filePath}`
           const cmd = `svn cat "${fullUrl}"`
           console.log('[getSvnFileContent] Executing:', cmd)
           const content = execSync(cmd, { encoding: 'utf-8' })
@@ -589,8 +605,10 @@ export const apiHandlers = {
       let cmd: string
       let output: string
       if (isUrl) {
-        // For remote URL, use full URL with file path
-        const fullUrl = repoPath.endsWith('/') ? repoPath + filePath : `${repoPath}/${filePath}`
+        // For remote URL, use repository root URL + file path
+        const fullUrl = filePath.startsWith('/')
+          ? repoRootUrl + filePath
+          : `${repoRootUrl}/${filePath}`
         cmd = `svn cat -r ${revision} "${fullUrl}"`
         console.log('[getSvnFileContent] Executing:', cmd)
         output = execSync(cmd, { encoding: 'utf-8' })
@@ -949,41 +967,108 @@ export const apiHandlers = {
     repoPath: string,
     revisions: number[]
   ): Promise<Array<{ revision: number; files: Array<{ status: string; path: string }> }>> => {
-    if (revisions.length === 0) return []
-    try {
-      // Get the SVN URL of the working copy to properly compute relative paths
-      const wcUrl = repoPath
+    console.log('[getSvnChangedFiles] Called with:', { repoPath, revisions })
+    if (revisions.length === 0) {
+      console.log('[getSvnChangedFiles] Empty revisions, returning []')
+      return []
+    }
 
-      const result: Array<{ revision: number; files: Array<{ status: string; path: string }> }> = []
+    const result: Array<{ revision: number; files: Array<{ status: string; path: string }> }> = []
+    
+    // Check if repoPath is a remote URL (svn://, http://, https://, file://) or local path
+    const isRemoteUrl = /^(svn|https?|file):\/\//.test(repoPath)
+    console.log('[getSvnChangedFiles] Detected as:', isRemoteUrl ? 'remote URL' : 'local path')
+
+    try {
       for (const revision of revisions) {
-        const cmd = `svn diff --summarize -r${revision - 1}:${revision} "${repoPath}"`
-        const output = execSync(cmd, { encoding: 'utf-8' })
-        const lines = output.split('\n').filter((line) => line.trim())
-        const files: Array<{ status: string; path: string }> = []
-        for (const line of lines) {
-          // Format: "M   /path/to/file" or "A   /path/to/file", or URL format
-          const match = line.match(/^([A-Z])\s+(.+)$/)
-          if (match) {
-            const status = match[1]
-            const filePath = match[2]
-            // Remove either local path or URL prefix to get relative path
-            const relativePath = filePath
-              .replace(repoPath, '')
-              .replace(wcUrl, '')
-              .replace(/^\//, '')
-            files.push({
-              status,
-              path: relativePath
-            })
+        try {
+          let output: string
+          
+          if (isRemoteUrl) {
+            // For remote URLs, use svn log with verbose mode
+            const cmd = `svn log -r ${revision} --verbose "${repoPath}"`
+            console.log('[getSvnChangedFiles] Executing remote URL command:', cmd)
+            output = execSync(cmd, { encoding: 'utf-8' })
+          } else {
+            // For local paths, use svn diff --summarize
+            const cmd = `svn diff --summarize -r ${revision - 1}:${revision} "${repoPath}"`
+            console.log('[getSvnChangedFiles] Executing local path command:', cmd)
+            output = execSync(cmd, { encoding: 'utf-8' })
           }
-        }
-        if (files.length > 0) {
-          result.push({ revision, files })
+          
+          console.log(`[getSvnChangedFiles] Output for r${revision}:`, output)
+          const files: Array<{ status: string; path: string }> = []
+          
+          if (isRemoteUrl) {
+            // Parse verbose log output
+            // Format: M /path/to/file (from /path/to/file:r123)
+            const lines = output.split('\n')
+            let inChanges = false
+            
+            for (const line of lines) {
+              if (line.trim() === 'Changed paths:') {
+                inChanges = true
+                continue
+              }
+              
+              if (!inChanges) continue
+              
+              // Stop at the message/log content
+              if (line.trim() && !line.match(/^\s*[ADM]\s+/)) {
+                if (line.trim().startsWith('-')) {
+                  break
+                }
+              }
+              
+              const match = line.match(/^\s*([ADM])\s+(.+?)(?:\s*\(.*\))?$/)
+              if (match) {
+                const filePath = match[2].trim().replace(/\s*\(.*\)$/, '')
+                files.push({
+                  status: match[1],
+                  path: filePath
+                })
+              }
+            }
+          } else {
+            // Parse diff output
+            // Format: "M   /path/to/file" or "M   path/to/file"
+            const lines = output.split('\n').filter((line) => line.trim())
+            
+            for (const line of lines) {
+              const match = line.match(/^([A-Z])\s+(.+)$/)
+              if (match) {
+                const status = match[1]
+                const filePath = match[2].replace(repoPath, '').replace(/^\//, '')
+                
+                if (filePath) {
+                  files.push({
+                    status,
+                    path: filePath
+                  })
+                }
+              }
+            }
+          }
+          
+          if (files.length > 0) {
+            result.push({ revision, files })
+            console.log(
+              `[getSvnChangedFiles] r${revision} has ${files.length} changed files:`,
+              files
+            )
+          } else {
+            console.log(`[getSvnChangedFiles] r${revision} - no files found`)
+          }
+        } catch (revError) {
+          console.error(`[getSvnChangedFiles] Error processing r${revision}:`, revError)
+          // Continue to next revision instead of failing completely
         }
       }
+      
+      console.log('[getSvnChangedFiles] Final result:', result)
       return result
     } catch (error) {
-      console.error('Failed to fetch changed files:', error)
+      console.error('[getSvnChangedFiles] Fatal error:', error)
       return []
     }
   },

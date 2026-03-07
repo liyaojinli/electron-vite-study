@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { Repository, type RepositoryData } from '../../../shared/repository'
-import { Plus, Check, Trash2, FolderOpen } from 'lucide-vue-next'
+import { Plus, Check, Trash2, FolderOpen, ScrollText } from 'lucide-vue-next'
+import SvnRemoteLogViewer from './SvnRemoteLogViewer.vue'
+import SvnDiffViewerReadOnly from './SvnDiffViewerReadOnly.vue'
 
 interface LocalAPI {
   listLocalRepositories(): Promise<RepositoryData[]>
@@ -10,20 +12,35 @@ interface LocalAPI {
   deleteLocalRepository(index: number): Promise<RepositoryData[]>
   verifyLocalRepository(repo: RepositoryData): Promise<{ ok: boolean; message?: string }>
   selectDirectory(): Promise<{ success: boolean; path?: string }>
+  getSvnRemoteUrl(repoPath: string): Promise<{ success: boolean; url: string; message: string }>
 }
 
 const api = (window as unknown as { api: LocalAPI }).api
 const repositories = ref<Repository[]>([])
 const baselineData = ref<Array<RepositoryData | null>>([])
 const newRows = ref(new Set<Repository>())
+const showRemoteLogViewer = ref(false)
+const remoteLogRepoUrl = ref('')
+const remoteLogTitle = ref('远程 SVN 日志')
+
+// SVN Diff Viewer ReadOnly states (for revision diff)
+const showDiffViewerReadOnly = ref(false)
+const diffViewerReadOnlyRepoPath = ref<string>('')
+const diffViewerReadOnlyFilePath = ref<string>('')
+const diffViewerReadOnlyBaseRevision = ref<number>(0)
+const diffViewerReadOnlyTargetRevision = ref<number>(0)
 
 const resetPasswordVisibility = (): void => {
   // No password field for local repositories
 }
 
 const updateRepositories = (data: RepositoryData[]): void => {
-  repositories.value = data.map((repo) => Repository.fromJSON(repo))
-  baselineData.value = data
+  // 按照别名排序
+  const sortedData = [...data].sort((a, b) => {
+    return a.alias.localeCompare(b.alias, 'zh-CN')
+  })
+  repositories.value = sortedData.map((repo) => Repository.fromJSON(repo))
+  baselineData.value = sortedData
   newRows.value = new Set()
   resetPasswordVisibility()
 }
@@ -64,9 +81,17 @@ const saveRepository = async (index: number): Promise<void> => {
     }
     // 调用 API 保存，但不使用返回结果刷新整个列表
     if (newRows.value.has(repo)) {
-      await api.insertLocalRepository(index, payload)
+      // 计算正确的插入位置：该行之前有多少条已保存的行
+      const savedRowsBeforeIndex = repositories.value
+        .slice(0, index)
+        .filter((r) => !newRows.value.has(r)).length
+      await api.insertLocalRepository(savedRowsBeforeIndex, payload)
     } else {
-      await api.updateLocalRepository(index, payload)
+      // 对于更新操作，也需要计算正确的索引：该行之前有多少条已保存的行
+      const savedRowsBeforeIndex = repositories.value
+        .slice(0, index)
+        .filter((r) => !newRows.value.has(r)).length
+      await api.updateLocalRepository(savedRowsBeforeIndex, payload)
     }
     
     // 不要刷新整个列表，只更新当前行的 baseline 数据
@@ -91,7 +116,11 @@ const removeRepository = async (index: number): Promise<void> => {
       resetPasswordVisibility()
     } else {
       // 已保存的行，调用 API 删除
-      await api.deleteLocalRepository(index)
+      // 计算正确的删除位置：该行之前有多少条已保存的行
+      const savedRowsBeforeIndex = repositories.value
+        .slice(0, index)
+        .filter((r) => !newRows.value.has(r)).length
+      await api.deleteLocalRepository(savedRowsBeforeIndex)
       // 不要刷新整个列表，只从当前列表中移除这一行
       repositories.value.splice(index, 1)
       baselineData.value.splice(index, 1)
@@ -120,6 +149,49 @@ const selectDirectoryForRepo = async (index: number): Promise<void> => {
   } catch (error) {
     console.error('Failed to select directory:', error)
   }
+}
+
+const viewRemoteLogsByLocalRepo = async (repo: Repository): Promise<void> => {
+  if (!repo.url) {
+    alert('请先填写本地仓库路径。')
+    return
+  }
+
+  try {
+    const remoteResult = await api.getSvnRemoteUrl(repo.url)
+    if (!remoteResult.success || !remoteResult.url) {
+      alert(remoteResult.message || '无法获取远程仓库地址。')
+      return
+    }
+
+    remoteLogRepoUrl.value = remoteResult.url
+    remoteLogTitle.value = `${repo.alias || repo.url} - 远程日志`
+    showRemoteLogViewer.value = true
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : '无法获取远程仓库地址'
+    alert(errorMsg)
+  }
+}
+
+const handleViewFileDiff = (payload: {
+  file: { status: string; path: string }
+  revision: number
+}): void => {
+  diffViewerReadOnlyRepoPath.value = remoteLogRepoUrl.value
+  diffViewerReadOnlyFilePath.value = payload.file.path
+  diffViewerReadOnlyBaseRevision.value = payload.revision - 1
+  diffViewerReadOnlyTargetRevision.value = payload.revision
+  showDiffViewerReadOnly.value = true
+}
+
+const handleCloseDiffViewerReadOnly = (): void => {
+  showDiffViewerReadOnly.value = false
+  setTimeout(() => {
+    diffViewerReadOnlyRepoPath.value = ''
+    diffViewerReadOnlyFilePath.value = ''
+    diffViewerReadOnlyBaseRevision.value = 0
+    diffViewerReadOnlyTargetRevision.value = 0
+  }, 300)
 }
 
 onMounted(() => {
@@ -196,6 +268,15 @@ onMounted(() => {
                 </button>
                 <button
                   type="button"
+                  class="repo-button is-neutral icon-only"
+                  aria-label="查看远程日志"
+                  :disabled="!repo.url"
+                  @click="viewRemoteLogsByLocalRepo(repo)"
+                >
+                  <ScrollText :size="18" :stroke-width="2" />
+                </button>
+                <button
+                  type="button"
                   class="repo-button is-danger icon-only"
                   aria-label="删除"
                   @click="removeRepository(index)"
@@ -208,10 +289,28 @@ onMounted(() => {
         </div>
       </div>
     </div>
+
+    <SvnRemoteLogViewer
+      :visible="showRemoteLogViewer"
+      :repo-url="remoteLogRepoUrl"
+      :title="remoteLogTitle"
+      :allow-file-diff="true"
+      @close="showRemoteLogViewer = false"
+      @view-file-diff="handleViewFileDiff"
+    />
+
+    <SvnDiffViewerReadOnly
+      :visible="showDiffViewerReadOnly"
+      :repo-path="diffViewerReadOnlyRepoPath"
+      :file-path="diffViewerReadOnlyFilePath"
+      :base-revision="diffViewerReadOnlyBaseRevision"
+      :target-revision="diffViewerReadOnlyTargetRevision"
+      @close="handleCloseDiffViewerReadOnly"
+    />
   </section>
 </template>
 <style scoped>
 .local-repo-table :deep(.repo-row) {
-  grid-template-columns: 1.1fr 2fr 110px;
+  grid-template-columns: 1.1fr 2fr 146px;
 }
 </style>

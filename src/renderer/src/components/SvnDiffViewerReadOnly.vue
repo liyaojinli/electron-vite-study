@@ -230,7 +230,7 @@ onBeforeUnmount(() => {
       <div class="diff-header">
         <div class="diff-title">
           <span class="title-text">版本差异查看</span>
-          <span class="file-path">{{ filePath }}</span>
+          <span class="file-path" :title="filePath">{{ filePath }}</span>
         </div>
         <button class="close-btn" @click="handleClose">
           <X :size="20" />
@@ -272,7 +272,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 1000;
+  z-index: 3500;
 }
 
 .diff-viewer-container {

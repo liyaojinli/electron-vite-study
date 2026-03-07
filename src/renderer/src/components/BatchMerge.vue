@@ -2,9 +2,8 @@
 import { onMounted, ref, computed, watch } from 'vue'
 import {
   Play,
-  X,
-  Search,
   FolderOpen,
+  ScrollText,
   LucideCircleCheckBig,
   LucideCircleX,
   LucideTriangleAlert
@@ -13,18 +12,11 @@ import type { RepositoryData } from '../../../shared/repository'
 import SvnLogDialog from './SvnLogDialog.vue'
 import SvnDiffViewerReadOnly from './SvnDiffViewerReadOnly.vue'
 import MergeProgressDialog from './MergeProgressDialog.vue'
+import SvnRemoteLogViewer from './SvnRemoteLogViewer.vue'
 
 const props = defineProps<{
   isActive: boolean
 }>()
-
-interface SvnLogEntry {
-  revision: number
-  author: string
-  date: string
-  message: string
-  selected?: boolean
-}
 
 // 单个版本的 merge 状态
 interface RevisionMergeState {
@@ -49,26 +41,16 @@ interface MergeSessionResult {
   isMerging?: boolean
 }
 
-interface AffectedFile {
-  revision: number
-  files: Array<{ status: string; path: string }>
-}
-
 const api = window.api
 
 const localRepositories = ref<RepositoryData[]>([])
 const remoteRepositories = ref<RepositoryData[]>([])
 const remoteUrlByLocalPath = ref<Record<string, string>>({})
-const svnLogs = ref<SvnLogEntry[]>([])
 const selectedSourceRepo = ref<string>('')
+const selectedRevisions = ref<number[]>([])
 const selectedTargetRepos = ref<Set<string>>(new Set())
 const mergeResults = ref<MergeSessionResult[]>([])
 const isLoading = ref(false)
-const isLogLoading = ref(false)
-const affectedFiles = ref<AffectedFile[]>([])
-const isLoadingFiles = ref(false)
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const tableRef = ref<any>(null)
 
 // SVN Log Dialog states
 const showSvnLogDialog = ref(false)
@@ -76,6 +58,9 @@ const svnLogTitle = ref('SVN 命令执行')
 const svnCommandLogs = ref<string[]>([])
 const svnLogLoading = ref(false)
 const svnLogSuccess = ref<boolean | null>(null)
+const showRemoteLogViewer = ref(false)
+const remoteLogViewerRepoUrl = ref('')
+const remoteLogViewerTitle = ref('远程 SVN 日志')
 
 // SVN Diff Viewer ReadOnly states (for revision diff)
 const showDiffViewerReadOnly = ref(false)
@@ -84,15 +69,18 @@ const diffViewerReadOnlyFilePath = ref<string>('')
 const diffViewerReadOnlyBaseRevision = ref<number>(0)
 const diffViewerReadOnlyTargetRevision = ref<number>(0)
 
-// Search related states
-const searchKeyword = ref<string>('')
-const startDate = ref<string>('')
-const endDate = ref<string>('')
-
 const loadRepositories = async (): Promise<void> => {
   try {
-    localRepositories.value = await api.getLocalRepositories()
-    remoteRepositories.value = await api.listRepositories()
+    const localRepos = await api.getLocalRepositories()
+    const remoteRepos = await api.listRepositories()
+    
+    // 按照别名排序
+    localRepositories.value = [...localRepos].sort((a, b) => {
+      return a.alias.localeCompare(b.alias, 'zh-CN')
+    })
+    remoteRepositories.value = [...remoteRepos].sort((a, b) => {
+      return a.alias.localeCompare(b.alias, 'zh-CN')
+    })
 
     const urlEntries = await Promise.all(
       localRepositories.value.map(async (repo) => {
@@ -128,12 +116,12 @@ watch(
 
 // Auto-load logs whenever source repo changes
 watch(selectedSourceRepo, async (newValue) => {
-  if (newValue) {
-    await loadLogs()
-  } else {
-    svnLogs.value = []
-    affectedFiles.value = []
+  if (!newValue) {
+    selectedRevisions.value = []
+    return
   }
+
+  selectedRevisions.value = []
 })
 
 const sourceRepo = computed(() =>
@@ -142,10 +130,6 @@ const sourceRepo = computed(() =>
 
 const targetRepos = computed(() =>
   localRepositories.value.filter((r) => selectedTargetRepos.value.has(r.url))
-)
-
-const selectedRevisions = computed(() =>
-  svnLogs.value.filter((log) => log.selected).map((log) => log.revision)
 )
 
 const getMergeResultForRepo = (repoUrl: string): MergeSessionResult | undefined => {
@@ -163,26 +147,6 @@ const getRepoMergeStatus = (repoUrl: string): 'success' | 'conflict' | 'error' |
   return hasConflictFiles(result) ? 'conflict' : 'success'
 }
 
-// Auto-load changed files when revisions are selected
-watch(selectedRevisions, async (newValue) => {
-  if (newValue.length > 0 && selectedSourceRepo.value) {
-    isLoadingFiles.value = true
-    try {
-      const repo = remoteRepositories.value.find((r) => r.url === selectedSourceRepo.value)
-      if (repo) {
-        affectedFiles.value = await api.getSvnChangedFiles(repo.url, newValue)
-      }
-    } catch (error) {
-      console.error('Failed to load changed files:', error)
-      affectedFiles.value = []
-    } finally {
-      isLoadingFiles.value = false
-    }
-  } else {
-    affectedFiles.value = []
-  }
-})
-
 const canMerge = computed(
   () =>
     selectedSourceRepo.value &&
@@ -197,99 +161,6 @@ const mergeDialogCurrentTarget = ref('')
 const mergeDialogLoading = ref(false)
 const mergeDialogSuccess = ref<boolean | null>(null)
 const hasPendingMerge = ref(false)
-
-const formatDate = (dateString: string): string => {
-  try {
-    const date = new Date(dateString)
-    // 转换为中国上海时区 (UTC+8)
-    return date.toLocaleString('zh-CN', {
-      timeZone: 'Asia/Shanghai',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false
-    })
-  } catch (error) {
-    console.error('Failed to format date:', error)
-    return dateString
-  }
-}
-
-const handleSelectionChange = (selection: SvnLogEntry[]): void => {
-  // Clear all selections first
-  svnLogs.value.forEach((log) => {
-    log.selected = false
-  })
-  // Set selected items
-  selection.forEach((selectedLog) => {
-    const log = svnLogs.value.find((l) => l.revision === selectedLog.revision)
-    if (log) {
-      log.selected = true
-    }
-  })
-}
-
-const handleRowClick = (row: SvnLogEntry): void => {
-  if (!tableRef.value) return
-  tableRef.value.toggleRowSelection(row)
-}
-
-const toggleAllSelections = (): void => {
-  if (!tableRef.value) return
-  // Clear all selections
-  tableRef.value.clearSelection()
-  svnLogs.value.forEach((log) => {
-    log.selected = false
-  })
-}
-
-const loadLogs = async (): Promise<void> => {
-  if (!selectedSourceRepo.value) return
-
-  isLogLoading.value = true
-  try {
-    const repo = remoteRepositories.value.find((r) => r.url === selectedSourceRepo.value)
-    if (repo) {
-      svnLogs.value = await api.getSvnLog(repo.url, 100)
-    }
-  } catch (error) {
-    console.error('Failed to load SVN logs:', error)
-    svnLogs.value = []
-  } finally {
-    isLogLoading.value = false
-  }
-}
-
-const performSearch = async (): Promise<void> => {
-  if (!selectedSourceRepo.value) return
-
-  isLogLoading.value = true
-  try {
-    const repo = remoteRepositories.value.find((r) => r.url === selectedSourceRepo.value)
-    if (repo) {
-      svnLogs.value = await api.getSvnLog(
-        repo.url,
-        100,
-        searchKeyword.value,
-        startDate.value,
-        endDate.value
-      )
-      // Clear selections and affected files when new search is performed
-      svnLogs.value.forEach((log) => {
-        log.selected = false
-      })
-      affectedFiles.value = []
-    }
-  } catch (error) {
-    console.error('Failed to search SVN logs:', error)
-    svnLogs.value = []
-  } finally {
-    isLogLoading.value = false
-  }
-}
 
 const toggleTargetRepo = (repoUrl: string): void => {
   if (selectedTargetRepos.value.has(repoUrl)) {
@@ -322,6 +193,32 @@ const openRepoDirectory = async (repoUrl: string): Promise<void> => {
 
 const getRemoteRepoUrlByLocalPath = (localPath: string): string => {
   return remoteUrlByLocalPath.value[localPath] || ''
+}
+
+const viewRemoteLogsByLocalRepo = async (repo: RepositoryData): Promise<void> => {
+  try {
+    let remoteUrl = getRemoteRepoUrlByLocalPath(repo.url)
+
+    if (!remoteUrl) {
+      const result = await api.getSvnRemoteUrl(repo.url)
+      if (!result.success || !result.url) {
+        alert(result.message || '无法获取远程仓库地址')
+        return
+      }
+      remoteUrl = result.url
+      remoteUrlByLocalPath.value = {
+        ...remoteUrlByLocalPath.value,
+        [repo.url]: remoteUrl
+      }
+    }
+
+    remoteLogViewerRepoUrl.value = remoteUrl
+    remoteLogViewerTitle.value = `${repo.alias || repo.url} - 远程日志`
+    showRemoteLogViewer.value = true
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : '打开远程日志失败'
+    alert(errorMsg)
+  }
 }
 
 const getLastPathSegment = (value: string): string => {
@@ -386,6 +283,20 @@ const handleCloseDiffViewerReadOnly = (): void => {
   }, 300)
 }
 
+const handleViewRemoteLogFileDiff = (
+  file: { status: string; path: string },
+  revision: number
+): void => {
+  // Don't allow viewing diff for directories (check for both / and \)
+  if (file.path.endsWith('/') || file.path.endsWith('\\')) return
+
+  diffViewerReadOnlyRepoPath.value = remoteLogViewerRepoUrl.value
+  diffViewerReadOnlyFilePath.value = file.path
+  diffViewerReadOnlyBaseRevision.value = revision - 1
+  diffViewerReadOnlyTargetRevision.value = revision
+  showDiffViewerReadOnly.value = true
+}
+
 const handleMergeDialogRefresh = async (): Promise<void> => {
   if (mergeResults.value.length === 0) return
 
@@ -443,17 +354,6 @@ const handleUpdateResult = (updatedResult: MergeSessionResult): void => {
     }
     return item
   })
-}
-
-// Check if affected file can show diff (not a directory)
-// Files have extensions (contain .), directories don't
-const canShowAffectedFileDiff = (file: { status: string; path: string }): boolean => {
-  // 以 / 或 \ 结尾的是目录
-  if (file.path.endsWith('/') || file.path.endsWith('\\')) return false
-  // 获取文件名，检查是否包含扩展名（支持 / 和 \ 分隔符）
-  const separator = file.path.includes('\\') ? '\\' : '/'
-  const fileName = file.path.split(separator).pop() || ''
-  return fileName.includes('.')
 }
 
 const performMerge = async (): Promise<void> => {
@@ -575,120 +475,15 @@ const performMerge = async (): Promise<void> => {
       <!-- SVN Logs Section -->
       <div v-if="selectedSourceRepo" class="merge-section">
         <h3 class="section-subtitle">步骤 2: 选择要合并的提交</h3>
-        <div class="logs-wrapper">
-          <div class="logs-table-container">
-            <div class="logs-toolbar">
-              <div class="toolbar-left">
-                <button class="app-button btn-small" @click="toggleAllSelections">
-                  <X :size="14" />
-                  清空
-                </button>
-              </div>
-              <div class="toolbar-right">
-                <input
-                  v-model="searchKeyword"
-                  type="text"
-                  placeholder="搜索(提交人/信息)"
-                  class="search-input"
-                  @keyup.enter="performSearch"
-                />
-                <input v-model="startDate" type="date" class="date-input" @change="performSearch" />
-                <span class="date-separator">至</span>
-                <input v-model="endDate" type="date" class="date-input" @change="performSearch" />
-                <button class="app-button btn-small is-primary" @click="performSearch">
-                  <Search :size="14" />
-                  搜索
-                </button>
-              </div>
-            </div>
-            <div class="logs-table-wrapper">
-              <!-- Loading overlay -->
-              <div v-if="isLogLoading" class="table-loading-overlay">
-                <div class="loading-spinner">加载中...</div>
-              </div>
-              <el-table
-                ref="tableRef"
-                :data="svnLogs"
-                stripe
-                border
-                size="small"
-                height="100%"
-                style="width: 100%"
-                class="compact-table"
-                @selection-change="handleSelectionChange"
-                @row-click="handleRowClick"
-              >
-                <el-table-column type="selection" width="40" align="center" />
-                <el-table-column prop="revision" label="Revision" width="80" align="center">
-                  <template #default="{ row }">
-                    <span style="color: var(--el-color-primary); font-weight: 600">
-                      r{{ row.revision }}
-                    </span>
-                  </template>
-                </el-table-column>
-                <el-table-column prop="message" label="提交信息" min-width="200">
-                  <template #default="{ row }">
-                    <el-tooltip
-                      :content="row.message"
-                      placement="right"
-                      :show-after="300"
-                      :disabled="!row.message"
-                      popper-class="commit-message-tooltip"
-                      effect="light"
-                      :show-arrow="false"
-                    >
-                      <span class="message-cell">{{ row.message }}</span>
-                    </el-tooltip>
-                  </template>
-                </el-table-column>
-                <el-table-column prop="author" label="提交人" width="100" show-overflow-tooltip />
-                <el-table-column prop="date" label="提交时间" width="160">
-                  <template #default="{ row }">
-                    {{ formatDate(row.date) }}
-                  </template>
-                </el-table-column>
-              </el-table>
-            </div>
-          </div>
-          <div class="logs-affected-files">
-            <div class="affected-files-header">影响文件</div>
-            <div class="affected-files-content">
-              <div v-if="selectedRevisions.length === 0" class="affected-files-empty">
-                选择提交记录后显示
-              </div>
-              <div v-else-if="isLoadingFiles" class="affected-files-empty">加载文件中...</div>
-              <div v-else-if="affectedFiles.length === 0" class="affected-files-empty">
-                无文件改动
-              </div>
-              <div v-else class="affected-files-list">
-                <div
-                  v-for="revisionGroup in affectedFiles"
-                  :key="revisionGroup.revision"
-                  class="revision-group"
-                >
-                  <div class="revision-header">--- Revision {{ revisionGroup.revision }} ---</div>
-                  <div
-                    v-for="file in revisionGroup.files"
-                    :key="file.path"
-                    class="file-line"
-                    :class="[
-                      `status-${file.status}`,
-                      { 'can-view-diff': canShowAffectedFileDiff(file) },
-                      { 'is-directory': !canShowAffectedFileDiff(file) }
-                    ]"
-                    @click="
-                      canShowAffectedFileDiff(file) &&
-                      handleViewAffectedFileDiff(file, revisionGroup.revision)
-                    "
-                  >
-                    <span class="file-status">{{ file.status }}</span>
-                    <span class="file-path">{{ file.path }}</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
+        <SvnRemoteLogViewer
+          v-model:selected-revisions="selectedRevisions"
+          :visible="Boolean(selectedSourceRepo)"
+          :repo-url="selectedSourceRepo"
+          title="提交记录与影响文件"
+          :embedded="true"
+          :allow-file-diff="true"
+          @view-file-diff="({ file, revision }) => handleViewAffectedFileDiff(file, revision)"
+        />
       </div>
 
       <!-- Target Repositories Selection -->
@@ -773,6 +568,17 @@ const performMerge = async (): Promise<void> => {
                   </button>
                   <div class="panel-action-label">目录</div>
                 </div>
+                <div class="panel-action-group">
+                  <button
+                    type="button"
+                    class="update-btn"
+                    :title="`查看远程日志 ${repo.alias}`"
+                    @click="viewRemoteLogsByLocalRepo(repo)"
+                  >
+                    <ScrollText :size="16" />
+                  </button>
+                  <div class="panel-action-label">远程日志</div>
+                </div>
               </div>
             </div>
             <div class="panel-body">
@@ -846,6 +652,15 @@ const performMerge = async (): Promise<void> => {
     @refresh="handleMergeDialogRefresh"
     @commit-success="handleMergeCommitSuccess"
     @update-result="handleUpdateResult"
+  />
+
+  <SvnRemoteLogViewer
+    :visible="showRemoteLogViewer"
+    :repo-url="remoteLogViewerRepoUrl"
+    :title="remoteLogViewerTitle"
+    :allow-file-diff="true"
+    @close="showRemoteLogViewer = false"
+    @view-file-diff="({ file, revision }) => handleViewRemoteLogFileDiff(file, revision)"
   />
 </template>
 

@@ -33,7 +33,7 @@
                 @click.prevent="handleViewFileDiff(repo, file.path)"
               >
                 <span :class="['file-status', `status-${file.status}`]">{{ file.status }}</span>
-                <span class="file-path">{{ file.path }}</span>
+                <span class="file-path" :title="file.path">{{ file.path }}</span>
               </a>
             </div>
           </div>

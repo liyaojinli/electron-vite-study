@@ -351,7 +351,7 @@ body {
 
 .repo-row {
   display: grid;
-  grid-template-columns: 1.1fr 2fr 1fr 1.2fr 110px;
+  grid-template-columns: 1.1fr 2fr 1fr 1.2fr 146px;
   align-items: center;
   gap: 8px;
   padding: 10px 12px;

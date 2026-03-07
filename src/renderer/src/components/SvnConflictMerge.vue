@@ -452,7 +452,7 @@ onBeforeUnmount(() => {
       <div class="conflict-header">
         <div class="conflict-title">
           <span class="title-text">冲突合并</span>
-          <span class="file-path">{{ filePath }}</span>
+          <span class="file-path" :title="filePath">{{ filePath }}</span>
         </div>
         <button class="close-btn" @click="handleClose">
           <X :size="20" />
