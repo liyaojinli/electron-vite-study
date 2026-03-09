@@ -186,6 +186,55 @@ const parseSvnInfoUrlFromXml = (xml: string): string => {
   return urlMatch ? decodeXmlEntities(urlMatch[1]).trim() : ''
 }
 
+/**
+ * Parse svn merge output to extract affected files.
+ * Format: "STATUS   path/to/file"
+ * STATUS can be: U (Updated), G (merGed), C (Conflict), A (Added), D (Deleted), etc.
+ * 
+ * Note: U and G are mapped to M to match svn status output (for consistent UI display)
+ */
+const parseSvnMergeOutput = (output: string): Array<{ status: string; path: string }> => {
+  const lines = output.split(/\r?\n/)
+  const files: Array<{ status: string; path: string }> = []
+
+  for (const line of lines) {
+    if (!line || line.trim() === '') continue
+
+    // Skip summary lines (e.g., "--- Merging r123 into '.':")
+    if (line.startsWith('---') || line.startsWith('Summary')) continue
+
+    // Match lines like "U    path/to/file" or " U   path/to/file"
+    const match = line.match(/^([AUGCDR ][ UC])\s+(.+)$/)
+    if (!match) continue
+
+    const statusChars = match[1]
+    const filePath = match[2].trim()
+
+    // Get the first meaningful status character (content status)
+    const contentStatus = statusChars[0].trim()
+    const propStatus = statusChars[1]?.trim()
+
+    // Determine the primary status
+    let status = contentStatus
+    if (contentStatus === 'C' || propStatus === 'C') {
+      status = 'C' // Conflict takes priority
+    } else if (!status && propStatus) {
+      status = propStatus
+    }
+
+    // Map U (Updated) and G (merGed) to M (Modified) to match svn status output
+    if (status === 'U' || status === 'G') {
+      status = 'M'
+    }
+
+    if (status && filePath) {
+      files.push({ status, path: filePath })
+    }
+  }
+
+  return files
+}
+
 const normalizeRemotePathPart = (value: string): string => {
   return value.replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '')
 }
@@ -1315,13 +1364,11 @@ export const apiHandlers = {
           console.log('[performSingleMerge] Merge stderr:', mergeResult.stderr)
         }
 
-        // 获取受影响的文件列表
-        const statusResult = await apiHandlers.getSvnStatus(targetRepo.url)
-        const affectedFiles = statusResult.files
-          .map((f) => `${f.status}  ${f.path}`)
-          .filter((f) => ['C', 'M', 'A', 'D', 'R'].some((st) => f.startsWith(st)))
+        // Parse merge output to get only files affected by this merge (not pre-existing local changes)
+        const mergedFiles = parseSvnMergeOutput(mergeResult.stdout)
+        const affectedFiles = mergedFiles.map((f) => `${f.status}  ${f.path}`)
+        const hasConflict = mergedFiles.some((f) => f.status === 'C')
 
-        const hasConflict = statusResult.files.some((f) => f.status === 'C')
         console.log(
           '[performSingleMerge] Merge 结果: hasConflict=',
           hasConflict,
@@ -1377,11 +1424,25 @@ export const apiHandlers = {
         let affectedFiles: string[] = []
         let hasConflict = false
         try {
-          const statusResult = await apiHandlers.getSvnStatus(targetRepo.url)
-          affectedFiles = statusResult.files
-            .map((f) => `${f.status}  ${f.path}`)
-            .filter((f) => ['C', 'M', 'A', 'D', 'R'].some((st) => f.startsWith(st)))
-          hasConflict = statusResult.files.some((f) => f.status === 'C')
+          // Try to parse merge output from error if available (e.g., conflict causes non-zero exit)
+          let mergedFiles: Array<{ status: string; path: string }> = []
+          if (error && typeof error === 'object' && 'stdout' in error && typeof error.stdout === 'string') {
+            mergedFiles = parseSvnMergeOutput(error.stdout)
+            console.log('[performSingleMerge] 从错误输出解析到', mergedFiles.length, '个文件')
+          }
+
+          // If we got files from merge output, use them; otherwise fall back to svn status
+          if (mergedFiles.length > 0) {
+            affectedFiles = mergedFiles.map((f) => `${f.status}  ${f.path}`)
+            hasConflict = mergedFiles.some((f) => f.status === 'C')
+          } else {
+            const statusResult = await apiHandlers.getSvnStatus(targetRepo.url)
+            affectedFiles = statusResult.files
+              .map((f) => `${f.status}  ${f.path}`)
+              .filter((f) => ['C', 'M', 'A', 'D', 'R'].some((st) => f.startsWith(st)))
+            hasConflict = statusResult.files.some((f) => f.status === 'C')
+          }
+
           console.log(
             '[performSingleMerge] Status 检查结果: hasConflict=',
             hasConflict,
@@ -1389,7 +1450,7 @@ export const apiHandlers = {
             affectedFiles.length
           )
         } catch (statusError) {
-          console.error('[performSingleMerge] getSvnStatus 也失败了:', statusError)
+          console.error('[performSingleMerge] 获取文件状态失败:', statusError)
         }
 
         if (hasConflict) {

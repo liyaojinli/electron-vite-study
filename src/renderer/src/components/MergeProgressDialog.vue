@@ -158,8 +158,8 @@
                   :class="[
                     'result-file-link',
                     getEffectiveFileStatus(file, result.targetRepoPath) === 'A' ? 'file-added' : '',
-                    getEffectiveFileStatus(file, result.targetRepoPath) === 'U'
-                      ? 'file-updated'
+                      getEffectiveFileStatus(file, result.targetRepoPath) === 'M'
+                        ? 'file-modified'
                       : '',
                     getEffectiveFileStatus(file, result.targetRepoPath) === 'D'
                       ? 'file-deleted'
@@ -1084,8 +1084,8 @@ const handleLogViewerClose = (): void => {
 .result-file-link.file-added {
   color: var(--color-success);
 }
-.result-file-link.file-updated {
-  color: #eab308;
+.result-file-link.file-modified {
+  color: #3b82f6;
 }
 .result-file-link.file-deleted {
   color: #888;

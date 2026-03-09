@@ -64,21 +64,59 @@ else
 fi
 echo ""
 
-# 查找需要复制的文件
-LATEST_YML=$(find "$DIST_DIR" -name "latest.yml" -type f | head -n 1)
-SETUP_EXE=$(find "$DIST_DIR" -name "*-setup.exe" -type f | head -n 1)
-BLOCKMAP=$(find "$DIST_DIR" -name "*.exe.blockmap" -type f | head -n 1)
+# 查找需要复制的文件（基于 latest.yml，避免命中旧版本文件）
+LATEST_YML="$DIST_DIR/latest.yml"
+SETUP_EXE=""
+BLOCKMAP=""
 
 # 检查文件是否存在
-if [ -z "$LATEST_YML" ]; then
+if [ ! -f "$LATEST_YML" ]; then
     print_error "未找到 latest.yml 文件"
     exit 1
 fi
 
-if [ -z "$SETUP_EXE" ]; then
-    print_error "未找到 setup.exe 文件"
+# 从 latest.yml 读取本次发布的 exe 文件名
+SETUP_EXE_NAME=$(awk -F': ' '/^path: / {print $2; exit}' "$LATEST_YML" | tr -d '\r' | xargs)
+if [ -z "$SETUP_EXE_NAME" ]; then
+    print_error "latest.yml 中未找到 path 字段"
     exit 1
 fi
+
+SETUP_EXE="$DIST_DIR/$SETUP_EXE_NAME"
+if [ ! -f "$SETUP_EXE" ]; then
+    print_error "未找到 setup.exe 文件: $SETUP_EXE_NAME"
+    exit 1
+fi
+
+BLOCKMAP="$SETUP_EXE.blockmap"
+if [ ! -f "$BLOCKMAP" ]; then
+    BLOCKMAP=""
+fi
+
+# 清理 dist 中旧版本构建产物，仅保留本次发布对应文件
+print_info "正在清理 dist 目录旧产物..."
+DIST_OLD_FILES=$(find "$DIST_DIR" \( -name "*-setup.exe" -o -name "*.exe.blockmap" \) -type f 2>/dev/null || true)
+if [ -n "$DIST_OLD_FILES" ]; then
+    echo "$DIST_OLD_FILES" | while read -r file; do
+        if [ -z "$file" ]; then
+            continue
+        fi
+
+        if [ "$file" = "$SETUP_EXE" ]; then
+            continue
+        fi
+
+        if [ -n "$BLOCKMAP" ] && [ "$file" = "$BLOCKMAP" ]; then
+            continue
+        fi
+
+        rm -f "$file"
+        print_success "已删除 dist 旧文件 $(basename "$file")"
+    done
+else
+    print_info "dist 目录无旧产物需要清理"
+fi
+echo ""
 
 print_info "找到以下文件："
 echo "  - $(basename "$LATEST_YML")"
