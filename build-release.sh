@@ -37,6 +37,86 @@ print_header() {
     echo ""
 }
 
+format_bytes() {
+    local bytes=${1:-0}
+    if [ "$bytes" -lt 1024 ]; then
+        echo "${bytes} B"
+    elif [ "$bytes" -lt 1048576 ]; then
+        awk "BEGIN {printf \"%.2f KB\", ${bytes}/1024}"
+    elif [ "$bytes" -lt 1073741824 ]; then
+        awk "BEGIN {printf \"%.2f MB\", ${bytes}/1048576}"
+    else
+        awk "BEGIN {printf \"%.2f GB\", ${bytes}/1073741824}"
+    fi
+}
+
+get_cache_size_bytes() {
+    local total_kb=0
+    local cache_dirs=(
+        "$HOME/Library/Caches/electron"
+        "$HOME/Library/Caches/electron-builder"
+    )
+
+    for dir in "${cache_dirs[@]}"; do
+        if [ -d "$dir" ]; then
+            local dir_kb
+            dir_kb=$(du -sk "$dir" 2>/dev/null | awk '{print $1}')
+            total_kb=$((total_kb + ${dir_kb:-0}))
+        fi
+    done
+
+    echo $((total_kb * 1024))
+}
+
+run_with_download_monitor() {
+    local target_label="$1"
+    local cmd="$2"
+
+    print_info "执行命令: ${cmd}"
+    print_info "下载监控: 显示缓存增量和瞬时速度（命中缓存时增量可能为 0）"
+
+    local start_bytes
+    start_bytes=$(get_cache_size_bytes)
+    local prev_bytes=$start_bytes
+    local spin='|/-\\'
+    local i=0
+
+    bash -lc "$cmd" &
+    local cmd_pid=$!
+
+    while kill -0 "$cmd_pid" 2>/dev/null; do
+        local now_bytes
+        now_bytes=$(get_cache_size_bytes)
+        local downloaded=$((now_bytes - start_bytes))
+        local speed=$((now_bytes - prev_bytes))
+        if [ "$downloaded" -lt 0 ]; then downloaded=0; fi
+        if [ "$speed" -lt 0 ]; then speed=0; fi
+
+        printf "\r[%c] %s 下载中: %s | 速度: %s/s" \
+            "${spin:i++%${#spin}:1}" \
+            "$target_label" \
+            "$(format_bytes "$downloaded")" \
+            "$(format_bytes "$speed")"
+
+        prev_bytes=$now_bytes
+        sleep 1
+    done
+
+    wait "$cmd_pid"
+    local exit_code=$?
+
+    local end_bytes
+    end_bytes=$(get_cache_size_bytes)
+    local total_downloaded=$((end_bytes - start_bytes))
+    if [ "$total_downloaded" -lt 0 ]; then total_downloaded=0; fi
+
+    printf "\r[✓] %s 下载阶段完成: %s                                \n" \
+        "$target_label" \
+        "$(format_bytes "$total_downloaded")"
+
+    return "$exit_code"
+}
+
 # 检查 Node.js 是否安装
 check_node() {
     if ! command -v node &> /dev/null; then
@@ -119,7 +199,7 @@ build_mac() {
     print_info "开始构建 macOS 版本 (x64 + arm64)..."
     print_info "这可能需要几分钟时间..."
     
-    electron-builder --mac
+    run_with_download_monitor "macOS" "npx electron-builder --mac"
     
     print_success "macOS 应用构建完成"
     
@@ -136,7 +216,7 @@ build_win() {
     print_info "开始构建 Windows 版本 (x64)..."
     print_info "这可能需要几分钟时间..."
     
-    electron-builder --win
+    run_with_download_monitor "Windows" "npx electron-builder --win"
     
     print_success "Windows 应用构建完成"
     

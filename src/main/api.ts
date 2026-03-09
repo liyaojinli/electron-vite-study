@@ -1,5 +1,5 @@
 import { ipcMain, dialog, BrowserWindow, shell } from 'electron'
-import { execSync } from 'child_process'
+import { execSync, spawnSync } from 'child_process'
 import { exec } from 'child_process'
 import * as path from 'path'
 import * as fs from 'fs'
@@ -414,7 +414,7 @@ export const apiHandlers = {
         cmd = `svn update "${repoPath}"`
         console.log('[svnUpdate] Updating entire repository')
       }
-      
+
       const output = execSync(cmd, { encoding: 'utf-8', cwd: repoPath })
       const logs = output
         .trim()
@@ -674,18 +674,18 @@ export const apiHandlers = {
           message: '读取本地工作副本成功'
         }
       }
-      
+
       if (!isUrl && revision === 'THEIRS') {
         // For conflicts, try to find the merge-right file (theirs version)
         const fullPath = path.isAbsolute(filePath) ? filePath : path.join(repoPath, filePath)
         const fileName = path.basename(fullPath)
         const fileDir = path.dirname(fullPath)
-        
+
         // Look for conflict files
         if (fs.existsSync(fileDir)) {
           const files = fs.readdirSync(fileDir)
           const mergeRightFile = files.find((f) => f.startsWith(fileName + '.merge-right.r'))
-          
+
           if (mergeRightFile) {
             const mergeRightPath = path.join(fileDir, mergeRightFile)
             const content = fs.readFileSync(mergeRightPath, 'utf-8')
@@ -696,7 +696,7 @@ export const apiHandlers = {
             }
           }
         }
-        
+
         // Fallback: use HEAD revision
         revision = 'HEAD'
       }
@@ -995,9 +995,6 @@ export const apiHandlers = {
     password?: string
   ): Promise<{ success: boolean; message: string; output?: string; command?: string }> => {
     try {
-      // Escape shell special characters in message
-      const escapedMessage = message.replace(/"/g, '\\"')
-
       const commitPaths = (filePaths || [])
         .map((filePath) => filePath.trim())
         .filter((filePath) => filePath !== '')
@@ -1011,48 +1008,75 @@ export const apiHandlers = {
         }
       }
 
-      const escapedPaths = commitPaths
-        .map((filePath) => `"${filePath.replace(/"/g, '\\"')}"`)
-        .join(' ')
-      
-      // Build svn commit command
-      let cmd = `svn commit -m "${escapedMessage}" ${escapedPaths}`
-      
+      // Build svn commit command arguments (using array for cross-platform safety)
+      const args = ['commit', '-m', message, ...commitPaths]
+
       // Add authentication if provided
       if (username && password) {
-        cmd += ` --username "${username}" --password "${password}" --non-interactive --no-auth-cache`
+        args.push(
+          '--username',
+          username,
+          '--password',
+          password,
+          '--non-interactive',
+          '--no-auth-cache'
+        )
       }
-      
+
+      // Build command string for logging (safe for display)
+      const displayArgs = [...args]
+      if (username && password) {
+        const passwordIndex = displayArgs.indexOf('--password')
+        if (passwordIndex >= 0 && passwordIndex + 1 < displayArgs.length) {
+          displayArgs[passwordIndex + 1] = '***'
+        }
+      }
+      const cmdDisplay = `svn ${displayArgs.join(' ')}`
+
       console.log('[svnCommit] Executing commit for:', repoPath)
-      
-      const output = execSync(cmd, { encoding: 'utf-8', cwd: repoPath })
+      console.log('[svnCommit] Command:', cmdDisplay)
+
+      // Use spawnSync with argument array for proper cross-platform handling
+      const result = spawnSync('svn', args, {
+        cwd: repoPath,
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe']
+      })
+
+      if (result.error) {
+        throw result.error
+      }
+
+      if (result.status !== 0) {
+        const errorOutput = result.stderr || result.stdout || '未知错误'
+        throw new Error(errorOutput)
+      }
+
+      const output = result.stdout || '提交成功'
       console.log('[svnCommit] Output:', output)
 
       return {
         success: true,
         message: '提交成功',
         output,
-        command: cmd
+        command: cmdDisplay
       }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : '提交失败'
       console.error('[svnCommit] Error:', errorMsg)
-      
-      // Build command for error case as well
-      const escapedMessage = message.replace(/"/g, '\\"')
-      const escapedPaths = (filePaths || [])
-        .map((filePath) => `"${filePath.replace(/"/g, '\\"')}"`)
-        .join(' ')
-      let cmd = `svn commit -m "${escapedMessage}" ${escapedPaths}`
+
+      // Build command for error display
+      const displayPaths = (filePaths || []).map((p) => `"${p}"`).join(' ')
+      let cmdDisplay = `svn commit -m "${message}" ${displayPaths}`
       if (username && password) {
-        cmd += ` --username "${username}" --password "***" --non-interactive --no-auth-cache`
+        cmdDisplay += ` --username "${username}" --password "***" --non-interactive --no-auth-cache`
       }
-      
+
       return {
         success: false,
         message: `提交失败: ${errorMsg}`,
         output: errorMsg,
-        command: cmd
+        command: cmdDisplay
       }
     }
   },
@@ -1068,7 +1092,7 @@ export const apiHandlers = {
     }
 
     const result: Array<{ revision: number; files: Array<{ status: string; path: string }> }> = []
-    
+
     // Check if repoPath is a remote URL (svn://, http://, https://, file://) or local path
     const isRemoteUrl = /^(svn|https?|file):\/\//.test(repoPath)
     console.log('[getSvnChangedFiles] Detected as:', isRemoteUrl ? 'remote URL' : 'local path')
@@ -1077,7 +1101,7 @@ export const apiHandlers = {
       for (const revision of revisions) {
         try {
           let output: string
-          
+
           if (isRemoteUrl) {
             // For remote URLs, use svn log with verbose mode
             const cmd = `svn log -r ${revision} --verbose "${repoPath}"`
@@ -1089,31 +1113,31 @@ export const apiHandlers = {
             console.log('[getSvnChangedFiles] Executing local path command:', cmd)
             output = execSync(cmd, { encoding: 'utf-8' })
           }
-          
+
           console.log(`[getSvnChangedFiles] Output for r${revision}:`, output)
           const files: Array<{ status: string; path: string }> = []
-          
+
           if (isRemoteUrl) {
             // Parse verbose log output
             // Format: M /path/to/file (from /path/to/file:r123)
             const lines = output.split('\n')
             let inChanges = false
-            
+
             for (const line of lines) {
               if (line.trim() === 'Changed paths:') {
                 inChanges = true
                 continue
               }
-              
+
               if (!inChanges) continue
-              
+
               // Stop at the message/log content
               if (line.trim() && !line.match(/^\s*[ADM]\s+/)) {
                 if (line.trim().startsWith('-')) {
                   break
                 }
               }
-              
+
               const match = line.match(/^\s*([ADM])\s+(.+?)(?:\s*\(.*\))?$/)
               if (match) {
                 const filePath = match[2].trim().replace(/\s*\(.*\)$/, '')
@@ -1127,13 +1151,13 @@ export const apiHandlers = {
             // Parse diff output
             // Format: "M   /path/to/file" or "M   path/to/file"
             const lines = output.split('\n').filter((line) => line.trim())
-            
+
             for (const line of lines) {
               const match = line.match(/^([A-Z])\s+(.+)$/)
               if (match) {
                 const status = match[1]
                 const filePath = match[2].replace(repoPath, '').replace(/^\//, '')
-                
+
                 if (filePath) {
                   files.push({
                     status,
@@ -1143,7 +1167,7 @@ export const apiHandlers = {
               }
             }
           }
-          
+
           if (files.length > 0) {
             result.push({ revision, files })
             console.log(
@@ -1158,7 +1182,7 @@ export const apiHandlers = {
           // Continue to next revision instead of failing completely
         }
       }
-      
+
       console.log('[getSvnChangedFiles] Final result:', result)
       return result
     } catch (error) {
@@ -1211,7 +1235,7 @@ export const apiHandlers = {
         sourceRepo.url,
         sortedRevisions
       )
-      
+
       // 收集所有影响的文件路径（去重）
       const affectedFilePaths = new Set<string>()
       for (const group of changedFilesGroups) {
@@ -1222,11 +1246,11 @@ export const apiHandlers = {
           }
         }
       }
-      
+
       if (affectedFilePaths.size > 0) {
         const filePaths = Array.from(affectedFilePaths)
         console.log(`[performSingleMerge] 准备 update ${filePaths.length} 个影响文件...`)
-        
+
         // 对这些文件执行 update
         const updateResult = await apiHandlers.svnUpdate(targetRepo.url, filePaths)
         if (!updateResult.success) {
@@ -1261,12 +1285,12 @@ export const apiHandlers = {
         const mergeCmd = `svn merge --accept=postpone -c ${currentRevision} "${sourceRepo.url}" "${targetRepo.url}"`
         console.log('[performSingleMerge] 执行 merge 命令:', mergeCmd)
         console.log('[performSingleMerge] 工作目录:', targetRepo.url)
-        
+
         const mergeResult = await execAsync(mergeCmd, {
           cwd: targetRepo.url,
           maxBuffer: 10 * 1024 * 1024
         })
-        
+
         console.log('[performSingleMerge] Merge stdout:', mergeResult.stdout)
         if (mergeResult.stderr) {
           console.log('[performSingleMerge] Merge stderr:', mergeResult.stderr)
@@ -1329,7 +1353,7 @@ export const apiHandlers = {
           console.error('[performSingleMerge] 错误信息:', error.message)
           console.error('[performSingleMerge] 错误堆栈:', error.stack)
         }
-        
+
         // 即使出错，也尝试获取文件列表
         let affectedFiles: string[] = []
         let hasConflict = false
@@ -1377,7 +1401,7 @@ export const apiHandlers = {
         // 真正的失败，停止处理
         revisionStates[currentIndex].status = 'failed'
         revisionStates[currentIndex].message = error instanceof Error ? error.message : '未知错误'
-        
+
         console.error('[performSingleMerge] 版本', currentRevision, '合并失败，停止处理')
 
         const allFiles = new Set<string>()
@@ -1398,7 +1422,7 @@ export const apiHandlers = {
           files: Array.from(allFiles),
           isMerging: false
         }
-        
+
         console.log('[performSingleMerge] 返回失败结果:', JSON.stringify(failureResult, null, 2))
         return failureResult
       }
@@ -1424,7 +1448,7 @@ export const apiHandlers = {
       files: Array.from(allFiles),
       isMerging: false
     }
-    
+
     console.log('[performSingleMerge] 返回成功结果: 总文件数=', allFiles.size)
     return successResult
   },

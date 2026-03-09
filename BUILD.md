@@ -36,8 +36,8 @@ build-release.bat
 
 ```
 dist/
-├── electron-vite-study-1.0.0.dmg          # macOS 安装包（universal，支持 Intel + M1/M2）
-├── electron-vite-study-1.0.0-setup.exe    # Windows 安装程序（64位）
+├── svn-merge-util-1.0.0.dmg          # macOS 安装包（universal，支持 Intel + M1/M2）
+├── svn-merge-util-1.0.0-setup.exe    # Windows 安装程序（64位）
 └── ...其他临时文件
 ```
 

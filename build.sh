@@ -42,8 +42,8 @@ cat << 'EOF'
   构建完成后，安装包位于:
   
     dist/
-    ├── electron-vite-study-1.0.0.dmg          (macOS)
-    └── electron-vite-study-1.0.0-setup.exe    (Windows)
+    ├── svn-merge-util-1.0.0.dmg          (macOS)
+    └── svn-merge-util-1.0.0-setup.exe    (Windows)
 
 
 ⚙️  构建流程

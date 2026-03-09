@@ -1,7 +1,7 @@
 {
-  "name": "electron-vite-study",
+  "name": "svn-merge-util",
   "version": "1.0.0",
-  "description": "An Electron application with Vue and TypeScript",
+  "description": "SVN batch merge utility with Vue and TypeScript",
   "main": "./out/main/index.js",
   "author": "example.com",
   "homepage": "https://electron-vite.org",
@@ -18,7 +18,7 @@
     "build:unpack": "npm run build && electron-builder --dir",
     "build:win": "npm run build && electron-builder --win",
     "build:mac": "npm run build && electron-builder --mac",
-    "build:release": "./build-release.sh"
+    "build:release": "./build-release.sh",
     "build:linux": "npm run build && electron-builder --linux"
   },
   "dependencies": {

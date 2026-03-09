@@ -1,6 +1,6 @@
-# electron-vite-study
+# svn-merge-util
 
-An Electron application with Vue and TypeScript
+SVN 批量代码合并工具 - 基于 Electron + Vue + TypeScript 的桌面应用
 
 ## Recommended IDE Setup
 
