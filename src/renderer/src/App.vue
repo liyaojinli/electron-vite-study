@@ -4,6 +4,7 @@ import AppMenu from './components/AppMenu.vue'
 import RepositorySettings from './components/RepositorySettings.vue'
 import LocalRepositorySettings from './components/LocalRepositorySettings.vue'
 import BatchMerge from './components/BatchMerge.vue'
+import UpdateNotification from './components/UpdateNotification.vue'
 
 const menuItems = [
   { id: 'remote-repository', label: '远程仓库设置' },
@@ -12,6 +13,7 @@ const menuItems = [
 ]
 const activeMenuId = ref('batch-merge')
 const isDark = ref(false)
+const updateNotificationRef = ref<InstanceType<typeof UpdateNotification> | null>(null)
 
 const applyTheme = (dark: boolean): void => {
   document.documentElement.dataset.theme = dark ? 'dark' : 'light'
@@ -27,6 +29,12 @@ const toggleTheme = (): void => {
 
 const handleMenuSelect = (id: string): void => {
   activeMenuId.value = id
+}
+
+const handleCheckUpdate = async (): Promise<void> => {
+  if (updateNotificationRef.value) {
+    await updateNotificationRef.value.checkForUpdates()
+  }
 }
 
 onMounted(() => {
@@ -53,6 +61,7 @@ onMounted(() => {
       :is-dark="isDark"
       @select="handleMenuSelect"
       @toggle-theme="toggleTheme"
+      @check-update="handleCheckUpdate"
     />
     <main class="app-content flex flex-1 p-6">
       <div class="app-main">
@@ -64,5 +73,8 @@ onMounted(() => {
         />
       </div>
     </main>
+    
+    <!-- 更新通知组件 -->
+    <UpdateNotification ref="updateNotificationRef" />
   </div>
 </template>

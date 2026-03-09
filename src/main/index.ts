@@ -5,6 +5,7 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import iconPng from '../../resources/icon.png?asset'
 import iconIcns from '../../resources/icon.icns?asset'
 import { registerApiHandlers } from './api'
+import { initUpdater, checkForUpdates, downloadUpdate, quitAndInstall } from './updater'
 
 const icon = process.platform === 'darwin' ? iconIcns : iconPng
 
@@ -166,6 +167,19 @@ app.whenReady().then(async () => {
   // IPC test
   ipcMain.on('ping', () => console.log('pong'))
 
+  // 注册更新相关的 IPC 处理器
+  ipcMain.handle('update:check', async () => {
+    await checkForUpdates()
+  })
+
+  ipcMain.handle('update:download', async () => {
+    await downloadUpdate()
+  })
+
+  ipcMain.handle('update:install', () => {
+    quitAndInstall()
+  })
+
   // 监听渲染进程的主题变化，设置原生窗口主题
   ipcMain.on('theme:set', (_event, isDark: boolean) => {
     // 设置 nativeTheme.themeSource 会影响所有窗口的原生外观（包括标题栏）
@@ -183,6 +197,18 @@ app.whenReady().then(async () => {
   registerApiHandlers()
 
   await createWindow()
+
+  // 初始化自动更新（仅 Windows 打包版本）
+  const mainWindow = BrowserWindow.getAllWindows()[0]
+  if (mainWindow) {
+    initUpdater(mainWindow)
+    // 延迟 3 秒后自动检查更新（避免启动时阻塞）
+    setTimeout(() => {
+      checkForUpdates().catch((error) => {
+        console.error('[Main] 自动检查更新失败:', error)
+      })
+    }, 3000)
+  }
 
   app.on('activate', function () {
     // On macOS it's common to re-create a window in the app when the

@@ -52,4 +52,11 @@ appImage:
 npmRebuild: false
 publish:
   provider: generic
-  url: https://example.com/auto-updates
+  # 更新服务器地址，需要替换为真实的服务器地址
+  # 该地址应该指向一个静态文件服务器（如 Nginx），包含以下文件：
+  # - latest.yml（更新元数据）
+  # - *-setup.exe（安装包）
+  # - *.blockmap（差分更新文件）
+  # 推荐使用 HTTPS 协议以确保安全性
+  # 示例：url: https://your-domain.com/updates/win
+  url: http://192.168.163.96:8888/auto-updates/

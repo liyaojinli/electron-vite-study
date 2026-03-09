@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Cloud, HardDrive, GitMerge } from 'lucide-vue-next'
+import { Cloud, HardDrive, GitMerge, RefreshCw } from 'lucide-vue-next'
 
 type MenuItem = {
   id: string
@@ -11,6 +11,7 @@ const props = defineProps<{ items: MenuItem[]; activeId?: string; isDark: boolea
 const emit = defineEmits<{
   (event: 'select', id: string): void
   (event: 'toggle-theme'): void
+  (event: 'check-update'): void
 }>()
 
 const handleSelect = (id: string): void => {
@@ -19,6 +20,10 @@ const handleSelect = (id: string): void => {
 
 const handleToggleTheme = (): void => {
   emit('toggle-theme')
+}
+
+const handleCheckUpdate = (): void => {
+  emit('check-update')
 }
 </script>
 
@@ -47,10 +52,26 @@ const handleToggleTheme = (): void => {
         <span class="app-menu-item-label">{{ item.label }}</span>
       </button>
     </nav>
+    <div class="app-menu-footer">
+      <button
+        type="button"
+        class="app-menu-item app-menu-action"
+        @click="handleCheckUpdate"
+        title="检查应用更新"
+      >
+        <RefreshCw :size="16" :stroke-width="2" />
+        <span class="app-menu-item-label">检查更新</span>
+      </button>
+    </div>
   </aside>
 </template>
 
 <style scoped>
+.app-menu {
+  display: flex;
+  flex-direction: column;
+}
+
 .app-menu-header {
   display: flex;
   justify-content: flex-start;
@@ -62,6 +83,12 @@ const handleToggleTheme = (): void => {
   display: flex;
   flex-direction: column;
   gap: 0;
+  flex: 1;
+}
+
+.app-menu-footer {
+  margin-top: auto;
+  border-top: 1px solid var(--color-border);
 }
 
 .app-menu-item {
@@ -89,6 +116,14 @@ const handleToggleTheme = (): void => {
   background: var(--color-primary-transparent);
   color: var(--color-primary);
   border-left-color: var(--color-primary);
+}
+
+.app-menu-action {
+  opacity: 0.8;
+}
+
+.app-menu-action:hover {
+  opacity: 1;
 }
 
 .app-menu-item-label {

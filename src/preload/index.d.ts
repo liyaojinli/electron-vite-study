@@ -13,11 +13,27 @@ interface ThemeAPI {
   setTheme: (isDark: boolean) => void
 }
 
+// 更新 API 类型
+interface UpdaterAPI {
+  checkForUpdates: () => Promise<void>
+  downloadUpdate: () => Promise<void>
+  installUpdate: () => void
+  onUpdateStatus: (
+    callback: (info: {
+      status: string
+      version?: string
+      progress?: number
+      error?: string
+    }) => void
+  ) => () => void
+}
+
 declare global {
   interface Window {
     electron: ElectronAPI
     api: API
     theme: ThemeAPI
+    updater: UpdaterAPI
   }
 }
 
