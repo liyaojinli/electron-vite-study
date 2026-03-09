@@ -24,6 +24,20 @@ const execAsync = promisify(exec)
 
 type ConflictSide = 'left' | 'right'
 
+// 判断是否是远程 URL
+const isRemoteUrl = (pathOrUrl: string): boolean => {
+  return /^(https?|svn):\/\//i.test(pathOrUrl)
+}
+
+// 为远程 SVN 操作添加 SSL 证书信任参数
+// 用于命令字符串拼接
+const getSslTrustFlags = (pathOrUrl: string): string => {
+  if (!isRemoteUrl(pathOrUrl)) {
+    return ''
+  }
+  return ' --non-interactive --trust-server-cert --trust-server-cert-failures=unknown-ca,cn-mismatch,expired,not-yet-valid,other'
+}
+
 // 单个版本的 merge 状态
 export interface RevisionMergeState {
   revision: number
@@ -145,6 +159,33 @@ const parseSvnLogXml = (xml: string): SvnLogEntry[] => {
   return logs
 }
 
+const parseSvnChangedPathsFromLogXml = (xml: string): Array<{ status: string; path: string }> => {
+  const files: Array<{ status: string; path: string }> = []
+  const pathRegex = /<path\b([^>]*)>([\s\S]*?)<\/path>/g
+
+  let pathMatch: RegExpExecArray | null
+  while ((pathMatch = pathRegex.exec(xml)) !== null) {
+    const attributes = pathMatch[1] || ''
+    const actionMatch = attributes.match(/\saction="([A-Z])"/)
+    const status = actionMatch ? actionMatch[1] : ''
+    const filePath = decodeXmlEntities(pathMatch[2]).trim()
+
+    if (status && filePath) {
+      files.push({
+        status,
+        path: filePath
+      })
+    }
+  }
+
+  return files
+}
+
+const parseSvnInfoUrlFromXml = (xml: string): string => {
+  const urlMatch = xml.match(/<url>([\s\S]*?)<\/url>/i)
+  return urlMatch ? decodeXmlEntities(urlMatch[1]).trim() : ''
+}
+
 const normalizeRemotePathPart = (value: string): string => {
   return value.replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '')
 }
@@ -223,7 +264,7 @@ const execRemoteSvnCat = (
   let lastError: unknown
 
   for (const candidate of candidates) {
-    const cmd = revision ? `svn cat -r ${revision} "${candidate}"` : `svn cat "${candidate}"`
+    const cmd = revision ? `svn cat -r ${revision} "${candidate}"${getSslTrustFlags(candidate)}` : `svn cat "${candidate}"${getSslTrustFlags(candidate)}`
     console.log('[getSvnFileContent] Executing:', cmd)
     try {
       return execSync(cmd, { encoding: 'utf-8' })
@@ -338,7 +379,7 @@ export const apiHandlers = {
   ): Promise<Array<{ revision: number; author: string; date: string; message: string }>> => {
     try {
       // 直接使用 repoPath，无需判断本地路径
-      let cmd = `svn log "${repoPath}" --limit ${limit} --xml`
+      let cmd = `svn log "${repoPath}"${getSslTrustFlags(repoPath)} --limit ${limit} --xml`
 
       // Add search parameter if provided
       if (searchKeyword) {
@@ -383,7 +424,7 @@ export const apiHandlers = {
     for (const revision of uniqueRevisions) {
       try {
         // 精确查询远程仓库指定 revision，避免被 --limit 截断。
-        const cmd = `svn log "${repoPath}" -r ${revision}:${revision} --xml`
+        const cmd = `svn log "${repoPath}"${getSslTrustFlags(repoPath)} -r ${revision}:${revision} --xml`
         const output = execSync(cmd, { encoding: 'utf-8' })
         const parsed = parseSvnLogXml(output)
         const matched = parsed.find((entry) => entry.revision === revision)
@@ -418,7 +459,7 @@ export const apiHandlers = {
       const output = execSync(cmd, { encoding: 'utf-8', cwd: repoPath })
       const logs = output
         .trim()
-        .split('\n')
+        .split(/\r?\n/)
         .filter((line) => line.trim())
       return {
         success: true,
@@ -444,7 +485,7 @@ export const apiHandlers = {
       const output = execSync(cmd, { encoding: 'utf-8' })
       console.log('[getSvnStatus] Output:', output)
 
-      const lines = output.split('\n')
+      const lines = output.split(/\r?\n/)
       const files: Array<{ status: string; path: string }> = []
 
       for (const line of lines) {
@@ -497,12 +538,13 @@ export const apiHandlers = {
           message: '获取远程路径成功'
         }
       } catch {
-        const infoOutput = execSync('svn info', { encoding: 'utf-8', cwd: repoPath })
-        const match = infoOutput.match(/^URL:\s*(.+)$/m)
-        if (match?.[1]) {
+        // Fallback for older svn clients: parse XML instead of locale-dependent plain text.
+        const infoOutput = execSync('svn info --xml', { encoding: 'utf-8', cwd: repoPath })
+        const url = parseSvnInfoUrlFromXml(infoOutput)
+        if (url) {
           return {
             success: true,
-            url: match[1].trim(),
+            url,
             message: '获取远程路径成功'
           }
         }
@@ -545,7 +587,7 @@ export const apiHandlers = {
 
       const logs = output
         .trim()
-        .split('\n')
+        .split(/\r?\n/)
         .filter((line) => line.trim())
 
       return {
@@ -1103,8 +1145,8 @@ export const apiHandlers = {
           let output: string
 
           if (isRemoteUrl) {
-            // For remote URLs, use svn log with verbose mode
-            const cmd = `svn log -r ${revision} --verbose "${repoPath}"`
+            // For remote URLs, parse XML output to avoid locale/newline issues on Windows.
+            const cmd = `svn log -r ${revision}:${revision}${getSslTrustFlags(repoPath)} --verbose --xml "${repoPath}"`
             console.log('[getSvnChangedFiles] Executing remote URL command:', cmd)
             output = execSync(cmd, { encoding: 'utf-8' })
           } else {
@@ -1118,45 +1160,22 @@ export const apiHandlers = {
           const files: Array<{ status: string; path: string }> = []
 
           if (isRemoteUrl) {
-            // Parse verbose log output
-            // Format: M /path/to/file (from /path/to/file:r123)
-            const lines = output.split('\n')
-            let inChanges = false
-
-            for (const line of lines) {
-              if (line.trim() === 'Changed paths:') {
-                inChanges = true
-                continue
-              }
-
-              if (!inChanges) continue
-
-              // Stop at the message/log content
-              if (line.trim() && !line.match(/^\s*[ADM]\s+/)) {
-                if (line.trim().startsWith('-')) {
-                  break
-                }
-              }
-
-              const match = line.match(/^\s*([ADM])\s+(.+?)(?:\s*\(.*\))?$/)
-              if (match) {
-                const filePath = match[2].trim().replace(/\s*\(.*\)$/, '')
-                files.push({
-                  status: match[1],
-                  path: filePath
-                })
-              }
-            }
+            files.push(...parseSvnChangedPathsFromLogXml(output))
           } else {
             // Parse diff output
             // Format: "M   /path/to/file" or "M   path/to/file"
-            const lines = output.split('\n').filter((line) => line.trim())
+            const lines = output.split(/\r?\n/).filter((line) => line.trim())
+            const normalizedRepoPath = repoPath.replace(/\\/g, '/')
 
             for (const line of lines) {
               const match = line.match(/^([A-Z])\s+(.+)$/)
               if (match) {
                 const status = match[1]
-                const filePath = match[2].replace(repoPath, '').replace(/^\//, '')
+                const normalizedPath = match[2].replace(/\\/g, '/')
+                const filePath = normalizedPath
+                  .replace(normalizedRepoPath, '')
+                  .replace(/^\//, '')
+                  .trim()
 
                 if (filePath) {
                   files.push({
@@ -1282,7 +1301,7 @@ export const apiHandlers = {
       revisionStates[currentIndex].status = 'merging'
 
       try {
-        const mergeCmd = `svn merge --accept=postpone -c ${currentRevision} "${sourceRepo.url}" "${targetRepo.url}"`
+        const mergeCmd = `svn merge --accept=postpone${getSslTrustFlags(sourceRepo.url)} -c ${currentRevision} "${sourceRepo.url}" "${targetRepo.url}"`
         console.log('[performSingleMerge] 执行 merge 命令:', mergeCmd)
         console.log('[performSingleMerge] 工作目录:', targetRepo.url)
 
@@ -1500,7 +1519,7 @@ export const apiHandlers = {
       currentSession.revisions[nextIndex].status = 'merging'
 
       try {
-        const mergeCmd = `svn merge --accept=postpone -c ${nextRevision} "${sourceRepoUrl}" "${targetRepoPath}"`
+        const mergeCmd = `svn merge --accept=postpone${getSslTrustFlags(sourceRepoUrl)} -c ${nextRevision} "${sourceRepoUrl}" "${targetRepoPath}"`
         await execAsync(mergeCmd, {
           cwd: targetRepoPath,
           maxBuffer: 10 * 1024 * 1024
@@ -1582,6 +1601,59 @@ export const apiHandlers = {
     currentSession.success = !hasAnyFailed
     currentSession.message = hasAnyFailed ? '部分版本合并失败' : '全部合并成功'
     return currentSession
+  },
+
+  // 对单个仓库的失败会话进行重试（用于用户手动修复后继续 merge）
+  retryMergeSession: async (
+    sourceRepoUrl: string,
+    targetRepoPath: string,
+    currentSession: MergeSessionResult
+  ): Promise<MergeSessionResult> => {
+    if (!currentSession?.revisions || currentSession.revisions.length === 0) {
+      return {
+        ...currentSession,
+        success: false,
+        message: '没有可重试的版本'
+      }
+    }
+
+    // 优先从失败的版本开始重试；其次从当前索引；最后从 pending 版本。
+    let retryIndex = currentSession.revisions.findIndex((r) => r.status === 'failed')
+    if (retryIndex < 0 && currentSession.currentRevisionIndex >= 0) {
+      retryIndex = currentSession.currentRevisionIndex
+    }
+    if (retryIndex < 0) {
+      retryIndex = currentSession.revisions.findIndex((r) => r.status === 'pending')
+    }
+
+    if (retryIndex < 0) {
+      return {
+        ...currentSession,
+        allCompleted: true,
+        currentRevisionIndex: -1,
+        message: '没有可重试的版本，当前会话已完成'
+      }
+    }
+
+    const nextSession: MergeSessionResult = {
+      ...currentSession,
+      revisions: currentSession.revisions.map((rev, index) => {
+        if (index === retryIndex) {
+          return {
+            ...rev,
+            status: 'pending',
+            message: ''
+          }
+        }
+        return { ...rev }
+      }),
+      currentRevisionIndex: retryIndex,
+      allCompleted: false,
+      message: `准备重试版本 r${currentSession.revisions[retryIndex].revision}`,
+      isMerging: false
+    }
+
+    return apiHandlers.mergeNextRevision(sourceRepoUrl, targetRepoPath, nextSession)
   }
 }
 

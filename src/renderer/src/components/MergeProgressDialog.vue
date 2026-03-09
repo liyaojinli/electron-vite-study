@@ -57,9 +57,25 @@
                 />
                 <span>{{ result.targetRepoName }}</span>
               </div>
-              <span :class="['result-status', getResultStatusClass(result)]">
-                {{ getResultStatusText(result) }}
-              </span>
+              <div class="result-panel-title-right">
+                <button
+                  v-if="canRetryRepository(result)"
+                  type="button"
+                  class="retry-repo-btn"
+                  :disabled="isRetryingRepository(result) || result.isMerging"
+                  @click.stop="handleRetryRepository(result)"
+                >
+                  <LoaderCircle
+                    v-if="isRetryingRepository(result)"
+                    :size="14"
+                    class="is-spinning"
+                  />
+                  <span>{{ isRetryingRepository(result) ? '重试中...' : '重试此仓库' }}</span>
+                </button>
+                <span :class="['result-status', getResultStatusClass(result)]">
+                  {{ getResultStatusText(result) }}
+                </span>
+              </div>
             </div>
             <div v-if="isPanelExpanded(result)" class="result-panel-body">
               <!-- 版本进度信息 -->
@@ -416,6 +432,7 @@ const diffViewerVisible = ref(false)
 const selectedRepoPath = ref('')
 const selectedFilePath = ref('')
 const panelExpandedState = ref<Record<string, boolean>>({})
+const retryingState = ref<Record<string, boolean>>({})
 
 const getPanelKey = (result: MergeSessionResult): string => {
   return `${result.targetRepoName}::${result.targetRepoPath || ''}`
@@ -582,6 +599,49 @@ const handleConflictResolved = async (): Promise<void> => {
           alert(`继续合并失败: ${error instanceof Error ? error.message : '未知错误'}`)
         }
       }
+    }
+  }
+}
+
+const canRetryRepository = (result: MergeSessionResult): boolean => {
+  const hasFailedRevision = result.revisions?.some((rev) => rev.status === 'failed')
+  return Boolean(
+    hasFailedRevision && result.targetRepoPath && result.sourceRepoUrl && !result.isMerging
+  )
+}
+
+const isRetryingRepository = (result: MergeSessionResult): boolean => {
+  const key = getPanelKey(result)
+  return Boolean(retryingState.value[key])
+}
+
+const handleRetryRepository = async (result: MergeSessionResult): Promise<void> => {
+  if (!canRetryRepository(result)) return
+
+  const key = getPanelKey(result)
+  retryingState.value = {
+    ...retryingState.value,
+    [key]: true
+  }
+
+  try {
+    // 将 Vue 响应式对象转换为纯对象，避免 IPC 克隆错误
+    const plainSession = JSON.parse(JSON.stringify(result))
+    const updatedResult = await api.retryMergeSession(
+      result.sourceRepoUrl,
+      result.targetRepoPath,
+      plainSession
+    )
+
+    emit('update-result', updatedResult)
+    emit('refresh')
+  } catch (error) {
+    console.error('[MergeProgressDialog] 重试仓库 merge 失败:', error)
+    alert(`重试失败: ${error instanceof Error ? error.message : '未知错误'}`)
+  } finally {
+    retryingState.value = {
+      ...retryingState.value,
+      [key]: false
     }
   }
 }
@@ -825,6 +885,11 @@ const handleLogViewerClose = (): void => {
   align-items: center;
   justify-content: space-between;
 }
+.result-panel-title-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
 .result-panel-title-left {
   display: inline-flex;
   align-items: center;
@@ -879,6 +944,29 @@ const handleLogViewerClose = (): void => {
 .result-status.conflict {
   color: #eab308;
   font-weight: bold;
+}
+.retry-repo-btn {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-background-primary);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.retry-repo-btn:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.retry-repo-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 .is-spinning {
   animation: spin 1s linear infinite;

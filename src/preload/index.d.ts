@@ -24,6 +24,8 @@ interface UpdaterAPI {
       version?: string
       progress?: number
       error?: string
+      releaseNotes?: string
+      releaseDate?: string
     }) => void
   ) => () => void
 }

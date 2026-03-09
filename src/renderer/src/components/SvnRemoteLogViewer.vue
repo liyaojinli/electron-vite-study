@@ -271,7 +271,6 @@ watch(
           <div class="logs-toolbar">
             <button class="app-button btn-small" @click="clearSelections">
               <XCircle :size="14" />
-              清空选择
             </button>
             <input
               v-model="searchKeyword"
@@ -290,7 +289,6 @@ watch(
               @click="loadLogs"
             >
               <Search :size="14" />
-              搜索
             </button>
           </div>
 
@@ -490,7 +488,7 @@ watch(
   min-height: 0;
   flex: 1;
   display: grid;
-  grid-template-columns: minmax(0, 1.6fr) minmax(300px, 1fr);
+  grid-template-columns: minmax(0, 2fr) minmax(250px, 0.7fr);
 }
 
 .remote-log-left {

@@ -48,10 +48,21 @@ const updater = {
       version?: string
       progress?: number
       error?: string
+      releaseNotes?: string
+      releaseDate?: string
     }) => void
   ): (() => void) => {
     const listener = (_event: Electron.IpcRendererEvent, info: unknown): void => {
-      callback(info as { status: string; version?: string; progress?: number; error?: string })
+      callback(
+        info as {
+          status: string
+          version?: string
+          progress?: number
+          error?: string
+          releaseNotes?: string
+          releaseDate?: string
+        }
+      )
     }
     ipcRenderer.on('update:status', listener)
     // 返回取消监听的函数

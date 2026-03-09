@@ -113,6 +113,8 @@ const verifyRepository = async (
         repo.url,
         '--non-interactive',
         '--trust-server-cert',
+        // 支持各种 SSL 证书失败情况（SVN 1.9+）
+        '--trust-server-cert-failures=unknown-ca,cn-mismatch,expired,not-yet-valid,other',
         '--username',
         repo.username,
         '--password',

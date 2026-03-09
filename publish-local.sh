@@ -49,6 +49,21 @@ if [ ! -d "$TARGET_DIR" ]; then
     print_success "目录创建成功"
 fi
 
+# 清理旧版本文件
+print_info "正在清理旧版本文件..."
+OLD_FILES=$(find "$TARGET_DIR" -name "*-setup.exe" -o -name "*.exe.blockmap" 2>/dev/null || true)
+if [ -n "$OLD_FILES" ]; then
+    echo "$OLD_FILES" | while read -r file; do
+        if [ -f "$file" ]; then
+            rm -f "$file"
+            print_success "已删除 $(basename "$file")"
+        fi
+    done
+else
+    print_info "无旧文件需要清理"
+fi
+echo ""
+
 # 查找需要复制的文件
 LATEST_YML=$(find "$DIST_DIR" -name "latest.yml" -type f | head -n 1)
 SETUP_EXE=$(find "$DIST_DIR" -name "*-setup.exe" -type f | head -n 1)
@@ -78,6 +93,13 @@ print_info "正在复制文件到: $TARGET_DIR"
 
 cp "$LATEST_YML" "$TARGET_DIR/"
 print_success "已复制 $(basename "$LATEST_YML")"
+
+# 修复 latest.yml 中 releaseNotes 占位内容，注入真实发布说明
+TARGET_LATEST_YML="$TARGET_DIR/$(basename "$LATEST_YML")"
+if [ -f "$TARGET_LATEST_YML" ]; then
+    node ./scripts/inject-release-notes.js "$TARGET_LATEST_YML"
+    print_success "已写入 releaseNotes 到 $(basename "$TARGET_LATEST_YML")"
+fi
 
 cp "$SETUP_EXE" "$TARGET_DIR/"
 print_success "已复制 $(basename "$SETUP_EXE")"

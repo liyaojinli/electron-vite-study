@@ -9,9 +9,11 @@
 - ✅ 启动时自动检查更新（延迟 3 秒）
 - ✅ 手动检查更新按钮（侧边栏底部）
 - ✅ 更新通知弹窗（右下角）
+- ✅ 发布说明展示（可展开/折叠查看更新内容）
 - ✅ 下载进度显示
 - ✅ 用户确认后重启安装
 - ✅ 仅在 Windows 生产环境启用
+- ✅ 长期未更新用户自动跳到最新版本
 
 ## 工作流程
 
@@ -94,15 +96,34 @@ publish:
 
 ## 发布流程
 
-### 1. 更新版本号
+### 1. 更新版本号和发布说明
 
-编辑 `package.json`，递增 `version`（例如 `1.0.0` → `1.0.1`）。
+**步骤 1**：编辑 `RELEASE_NOTES.md`，在文件顶部添加新版本的发布说明：
+
+```markdown
+## v1.0.1 (2026-03-10)
+
+### 新增功能
+- ✨ 新增某某功能
+
+### 优化改进
+- 🎨 优化某某体验
+
+### 问题修复
+- 🐛 修复某某问题
+```
+
+**步骤 2**：编辑 `package.json`，递增 `version`（例如 `1.0.0` → `1.0.1`）。
 
 ```json
 {
   "version": "1.0.1"
 }
 ```
+
+**注意**：版本号必须与 `RELEASE_NOTES.md` 中的版本号一致。
+
+详细说明请参考：[RELEASE-NOTES-GUIDE.md](RELEASE-NOTES-GUIDE.md)
 
 ### 2. 构建 Windows 版本
 
@@ -321,6 +342,12 @@ idle → checking → available → downloading → downloaded → install
 
 ## 参考资料
 
+### 项目文档
+- [RELEASE-NOTES-GUIDE.md](RELEASE-NOTES-GUIDE.md) - 版本发布说明使用指南
+- [LOCAL-UPDATE-GUIDE.md](LOCAL-UPDATE-GUIDE.md) - 本地更新测试指南
+- [RELEASE_NOTES.md](RELEASE_NOTES.md) - 版本发布说明（源文件）
+
+### 官方文档
 - [electron-updater 官方文档](https://www.electron.build/auto-update)
 - [electron-builder 发布配置](https://www.electron.build/configuration/publish)
 - [Generic Provider 说明](https://www.electron.build/configuration/publish#generic-provider)

@@ -50,6 +50,9 @@ linux:
 appImage:
   artifactName: ${name}-${version}.${ext}
 npmRebuild: false
+# 发布说明配置
+releaseInfo:
+  releaseNotes: ''
 publish:
   provider: generic
   # 更新服务器地址，需要替换为真实的服务器地址

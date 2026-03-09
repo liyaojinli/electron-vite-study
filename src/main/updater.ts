@@ -15,6 +15,8 @@ export interface UpdateInfo {
   version?: string
   progress?: number
   error?: string
+  releaseNotes?: string
+  releaseDate?: string
 }
 
 let mainWindow: BrowserWindow | null = null
@@ -59,9 +61,23 @@ const registerUpdateListeners = (): void => {
   // 发现新版本
   autoUpdater.on('update-available', (info) => {
     console.log('[Updater] 发现新版本:', info.version)
+    console.log('[Updater] 发布说明:', info.releaseNotes)
+    
+    // releaseNotes 可能是字符串或数组，统一转换为字符串
+    let releaseNotes = ''
+    if (typeof info.releaseNotes === 'string') {
+      releaseNotes = info.releaseNotes
+    } else if (Array.isArray(info.releaseNotes) && info.releaseNotes.length > 0) {
+      releaseNotes = info.releaseNotes
+        .map((note) => (typeof note === 'object' && 'note' in note ? note.note : String(note)))
+        .join('\n\n')
+    }
+    
     sendUpdateStatus({
       status: 'available',
-      version: info.version
+      version: info.version,
+      releaseNotes: releaseNotes,
+      releaseDate: info.releaseDate || ''
     })
   })
 
