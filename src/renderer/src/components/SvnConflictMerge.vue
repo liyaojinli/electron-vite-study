@@ -40,6 +40,10 @@ const originalWorkingContent = ref('')
 const conflictBlocks = ref<ConflictBlock[]>([])
 const activeConflictIndex = ref(0)
 const conflictDecorations = ref<string[]>([])
+const contentWrapperRef = ref<HTMLElement | null>(null)
+const workingTitleRef = ref<HTMLElement | null>(null)
+const diffPaneHeight = ref(320)
+const isResizingPane = ref(false)
 
 const actionsDisabled = computed(() => isLoading.value || !props.repoPath || !props.filePath)
 const conflictCount = computed(() => conflictBlocks.value.length)
@@ -54,6 +58,10 @@ let workingModelInstance: monaco.editor.ITextModel | null = null
 let workingModelSubscription: monaco.IDisposable | null = null
 
 let themeObserver: MutationObserver | null = null
+let removeResizeListeners: (() => void) | null = null
+
+const SPLITTER_HEIGHT = 8
+const MIN_PANE_HEIGHT = 180
 
 const isDarkMode = (): boolean => {
   return document.documentElement.getAttribute('data-theme') === 'dark'
@@ -296,6 +304,68 @@ const initEditors = (
   syncConflictBlocksFromModel()
 }
 
+const layoutEditors = (): void => {
+  diffEditorInstance?.layout()
+  workingEditorInstance?.layout()
+}
+
+const clampDiffPaneHeight = (height: number): number => {
+  const container = contentWrapperRef.value
+  if (!container) return height
+
+  const titleHeight = workingTitleRef.value?.offsetHeight ?? 34
+  const minDiff = MIN_PANE_HEIGHT
+  const maxDiff = container.clientHeight - SPLITTER_HEIGHT - titleHeight - MIN_PANE_HEIGHT
+  if (maxDiff <= minDiff) {
+    return minDiff
+  }
+
+  return Math.max(minDiff, Math.min(height, maxDiff))
+}
+
+const setInitialPaneHeight = (): void => {
+  const container = contentWrapperRef.value
+  if (!container) return
+
+  // Keep bottom pane larger by default for final merge editing.
+  const preferredDiffHeight = Math.round(container.clientHeight * 0.38)
+  diffPaneHeight.value = clampDiffPaneHeight(preferredDiffHeight)
+}
+
+const stopPaneResize = (): void => {
+  if (removeResizeListeners) {
+    removeResizeListeners()
+    removeResizeListeners = null
+  }
+  isResizingPane.value = false
+}
+
+const startPaneResize = (event: MouseEvent): void => {
+  const container = contentWrapperRef.value
+  if (!container) return
+
+  event.preventDefault()
+  isResizingPane.value = true
+
+  const onMouseMove = (moveEvent: MouseEvent): void => {
+    const rect = container.getBoundingClientRect()
+    const nextHeight = moveEvent.clientY - rect.top
+    diffPaneHeight.value = clampDiffPaneHeight(nextHeight)
+    layoutEditors()
+  }
+
+  const onMouseUp = (): void => {
+    stopPaneResize()
+  }
+
+  window.addEventListener('mousemove', onMouseMove)
+  window.addEventListener('mouseup', onMouseUp)
+  removeResizeListeners = () => {
+    window.removeEventListener('mousemove', onMouseMove)
+    window.removeEventListener('mouseup', onMouseUp)
+  }
+}
+
 const loadConflictData = async (): Promise<void> => {
   if (!props.repoPath || !props.filePath) return
 
@@ -326,6 +396,8 @@ const loadConflictData = async (): Promise<void> => {
 
     await new Promise((resolve) => setTimeout(resolve, 50))
 
+    setInitialPaneHeight()
+
     const diffContainer = document.getElementById(`conflict-diff-editor-${editorKey.value}`)
     const workingContainer = document.getElementById(`conflict-working-editor-${editorKey.value}`)
 
@@ -340,6 +412,7 @@ const loadConflictData = async (): Promise<void> => {
       )
       setupThemeObserver()
       focusActiveConflict()
+      layoutEditors()
     }
   } catch (err) {
     error.value = err instanceof Error ? err.message : '加载冲突数据失败'
@@ -421,6 +494,7 @@ const resolveConflict = async (): Promise<void> => {
 }
 
 const handleClose = (): void => {
+  stopPaneResize()
   cleanupThemeObserver()
   destroyEditors()
   showEditors.value = false
@@ -433,6 +507,7 @@ watch(
     if (visible) {
       loadConflictData()
     } else {
+      stopPaneResize()
       cleanupThemeObserver()
       destroyEditors()
       showEditors.value = false
@@ -441,6 +516,7 @@ watch(
 )
 
 onBeforeUnmount(() => {
+  stopPaneResize()
   cleanupThemeObserver()
   destroyEditors()
 })
@@ -510,7 +586,11 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <div class="content-wrapper">
+      <div
+        ref="contentWrapperRef"
+        class="content-wrapper"
+        :style="{ gridTemplateRows: `${diffPaneHeight}px ${SPLITTER_HEIGHT}px auto 1fr` }"
+      >
         <div v-if="isLoading" class="loading-overlay">
           <div class="loading-spinner">加载中...</div>
         </div>
@@ -523,7 +603,13 @@ onBeforeUnmount(() => {
             class="diff-pane"
           ></div>
 
-          <div class="working-title">最终合并结果 (当前文件)</div>
+          <div
+            class="pane-splitter"
+            :class="{ resizing: isResizingPane }"
+            @mousedown="startPaneResize"
+          ></div>
+
+          <div ref="workingTitleRef" class="working-title">最终合并结果 (当前文件)</div>
           <div
             :id="`conflict-working-editor-${editorKey}`"
             :key="`working-${editorKey}`"
@@ -703,11 +789,23 @@ onBeforeUnmount(() => {
   position: relative;
   overflow: hidden;
   display: grid;
-  grid-template-rows: 1fr auto 1fr;
 }
 
 .diff-pane {
   min-height: 0;
+}
+
+.pane-splitter {
+  height: 8px;
+  cursor: row-resize;
+  background: var(--color-background-secondary);
+  border-top: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.pane-splitter:hover,
+.pane-splitter.resizing {
+  background: var(--color-background-hover);
 }
 
 .working-title {

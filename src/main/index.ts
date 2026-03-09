@@ -162,6 +162,27 @@ app.whenReady().then(async () => {
   // see https://github.com/alex8088/electron-toolkit/tree/master/packages/utils
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
+
+    // Keep DevTools toggle available in packaged app for troubleshooting.
+    window.webContents.on('before-input-event', (event, input) => {
+      if (input.type !== 'keyDown') {
+        return
+      }
+
+      const isF12 = input.key === 'F12'
+      const isCtrlOrCmdShiftI = (input.control || input.meta) && input.shift && input.key.toUpperCase() === 'I'
+      if (!isF12 && !isCtrlOrCmdShiftI) {
+        return
+      }
+
+      if (window.webContents.isDevToolsOpened()) {
+        window.webContents.closeDevTools()
+      } else {
+        window.webContents.openDevTools({ mode: 'detach' })
+      }
+
+      event.preventDefault()
+    })
   })
 
   // IPC test
