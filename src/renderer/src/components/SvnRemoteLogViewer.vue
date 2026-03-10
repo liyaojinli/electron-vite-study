@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { File, Folder, Search, X, XCircle } from 'lucide-vue-next'
+import { arraysEqual } from '../utils/util'
 
 interface SvnLogEntry {
   revision: number
@@ -80,11 +81,6 @@ const resetSelections = (): void => {
     tableRef.value.clearSelection()
     tableRef.value.setCurrentRow?.(undefined)
   }
-}
-
-const arraysEqual = (a: number[], b: number[]): boolean => {
-  if (a.length !== b.length) return false
-  return a.every((item, index) => item === b[index])
 }
 
 const loadLogs = async (): Promise<void> => {
@@ -565,32 +561,6 @@ watch(
 .search-input {
   width: 220px;
   padding: 0 10px;
-}
-.app-button {
-  padding: 8px 16px;
-  border: none;
-  border-radius: 6px;
-  background: var(--color-background-hover);
-  color: var(--color-text-primary);
-  cursor: pointer;
-  font-size: 14px;
-  font-weight: 500;
-  transition: all 0.2s;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-.app-button:hover:not(:disabled) {
-  background: var(--color-primary);
-  color: white;
-}
-.app-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.app-button.is-primary {
-  background: var(--color-primary);
-  color: white;
 }
 .app-button.btn-small {
   padding: 6px 12px;

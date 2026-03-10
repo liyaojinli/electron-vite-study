@@ -38,7 +38,9 @@ interface MergeSessionResult {
   success: boolean
   message: string
   files?: string[]
+  onlyFiles?: string[]
   isMerging?: boolean
+  hasTreeConflict: boolean
 }
 
 const api = window.api
@@ -77,7 +79,7 @@ const loadRepositories = async (): Promise<void> => {
   try {
     const localRepos = await api.getLocalRepositories()
     const remoteRepos = await api.listRepositories()
-    
+
     // 按照别名排序
     localRepositories.value = [...localRepos].sort((a, b) => {
       return a.alias.localeCompare(b.alias, 'zh-CN')
@@ -141,7 +143,21 @@ const getMergeResultForRepo = (repoUrl: string): MergeSessionResult | undefined 
 }
 
 const hasConflictFiles = (result?: MergeSessionResult): boolean => {
+  if (result?.hasTreeConflict) return true
   return Boolean(result?.files?.some((file) => file.startsWith('C')))
+}
+
+// 检查是否有目录冲突（tree conflict）
+const hasTreeConflict = (result?: MergeSessionResult): boolean => {
+  if (result?.hasTreeConflict) return true
+  if (!result?.files) return false
+  return result.files.some((file) => {
+    if (!file.startsWith('C')) return false
+    // 提取文件路径部分（跳过状态码）
+    const path = file.substring(1).trim()
+    // 目录通常以 / 或 \ 结尾，或者是纯目录路径
+    return path.endsWith('/') || path.endsWith('\\')
+  })
 }
 
 const getRepoMergeStatus = (repoUrl: string): 'success' | 'conflict' | 'error' | null => {
@@ -165,6 +181,23 @@ const mergeDialogCurrentTarget = ref('')
 const mergeDialogLoading = ref(false)
 const mergeDialogSuccess = ref<boolean | null>(null)
 const hasPendingMerge = ref(false)
+
+const resetMergeUiState = (): void => {
+  hasPendingMerge.value = false
+  showMergeDialog.value = false
+  mergeResults.value = []
+  selectedSourceRepo.value = ''
+  selectedTargetRepos.value = new Set()
+  selectedRevisions.value = []
+  mergeDialogLogs.value = []
+  mergeDialogCurrentTarget.value = ''
+  mergeDialogLoading.value = false
+  mergeDialogSuccess.value = null
+}
+
+const handleResetMergeState = (): void => {
+  resetMergeUiState()
+}
 
 const toggleTargetRepo = (repoUrl: string): void => {
   if (selectedTargetRepos.value.has(repoUrl)) {
@@ -252,8 +285,7 @@ const validateTargetRepoPathMatch = (): boolean => {
   const sourceRemoteTail = getLastPathSegment(sourceRepo.value?.url || '')
 
   if (!sourceRemoteTail) {
-    alert('远程仓库和本地仓库路径不匹配')
-    return false
+    return window.confirm('无法校验远程仓库和本地仓库路径是否匹配，是否继续合并？')
   }
 
   for (const repo of targetRepos.value) {
@@ -264,8 +296,9 @@ const validateTargetRepoPathMatch = (): boolean => {
   }
 
   if (mismatchRepos.length > 0) {
-    alert(`远程仓库和本地仓库路径不匹配: ${mismatchRepos.join('、')}`)
-    return false
+    return window.confirm(
+      `远程仓库和本地仓库路径不匹配: ${mismatchRepos.join('、')}。是否继续合并？`
+    )
   }
 
   return true
@@ -330,6 +363,7 @@ const handleMergeDialogRefresh = async (): Promise<void> => {
           return {
             ...result,
             files,
+            onlyFiles: result.onlyFiles,
             message: files.some((file) => file.startsWith('C')) ? '合并冲突' : '合并成功'
           }
         }
@@ -350,14 +384,7 @@ const handleMergeDialogRefresh = async (): Promise<void> => {
 
 const handleMergeCommitSuccess = (): void => {
   // 提交成功后清除未完成合并标志
-  hasPendingMerge.value = false
-  showMergeDialog.value = false
-  mergeResults.value = []
-  selectedTargetRepos.value = new Set()
-  mergeDialogLogs.value = []
-  mergeDialogCurrentTarget.value = ''
-  mergeDialogLoading.value = false
-  mergeDialogSuccess.value = null
+  resetMergeUiState()
 }
 
 // 处理单个仓库的 merge 结果更新（在冲突解决并继续下一个版本后）
@@ -408,7 +435,9 @@ const performMerge = async (): Promise<void> => {
     success: false,
     message: '合并中',
     files: [],
-    isMerging: true
+    onlyFiles: [],
+    isMerging: true,
+    hasTreeConflict: false
   }))
 
   // reset dialog
@@ -420,6 +449,7 @@ const performMerge = async (): Promise<void> => {
 
   try {
     let anyFailure = false
+    let anyTreeConflict = false
 
     const mergeTasks = targets.map(async (target) => {
       mergeDialogLogs.value.push(`开始合并到 ${target.alias}`)
@@ -428,11 +458,26 @@ const performMerge = async (): Promise<void> => {
       const res: MergeSessionResult = await api.performSingleMerge(source, target, revisions)
       const url = res.targetRepoUrl || target.url
 
+      // 检查是否有目录冲突（tree conflict）
+      let updatedRes = res
+      if (hasTreeConflict(res)) {
+        anyTreeConflict = true
+        // 如果有目录冲突，添加特殊提示
+        const treeConflictMessage =
+          '\n⚠️ 检测到目录冲突（Tree Conflict）！\n建议执行 Revert 后手动合并，因为目录冲突无法通过工具自动解决。'
+        updatedRes = {
+          ...res,
+          hasTreeConflict: true,
+          message: res.message + treeConflictMessage
+        }
+        mergeDialogLogs.value.push(`[${target.alias}] ⚠️ 检测到目录冲突，建议 Revert 后人工处理`)
+      }
+
       mergeResults.value = mergeResults.value.map((item) => {
         if (item.targetRepoUrl !== target.url) return item
         return {
-          ...res,
-          targetRepoName: res.targetRepoName || target.alias,
+          ...updatedRes,
+          targetRepoName: updatedRes.targetRepoName || target.alias,
           targetRepoUrl: url,
           isMerging: false
         }
@@ -453,6 +498,18 @@ const performMerge = async (): Promise<void> => {
     })
 
     await Promise.all(mergeTasks)
+
+    if (anyTreeConflict) {
+      mergeDialogLogs.value.push(
+        '检测到目录冲突（Tree Conflict），请处理后在主界面点击“重置”按钮清空状态，再开始下一次 merge。'
+      )
+
+      mergeDialogLoading.value = false
+      mergeDialogSuccess.value = false
+
+      alert('检测到目录冲突（Tree Conflict），请处理后在主界面点击“重置”按钮清空状态。')
+      return
+    }
 
     mergeDialogLoading.value = false
     mergeDialogSuccess.value = !anyFailure
@@ -556,6 +613,15 @@ const performMerge = async (): Promise<void> => {
               class="local-repo-search-input"
               @keyup.enter="searchLocalRepoKeyword = searchLocalRepoInputValue"
             />
+            <button
+              type="button"
+              class="reset-btn"
+              title="重置当前合并状态"
+              :disabled="isLoading"
+              @click="handleResetMergeState"
+            >
+              <span>重置</span>
+            </button>
             <button
               type="button"
               class="merge-btn"
@@ -702,6 +768,7 @@ const performMerge = async (): Promise<void> => {
   <MergeProgressDialog
     :visible="showMergeDialog"
     :results="mergeResults"
+    :logs="mergeDialogLogs"
     :is-loading="mergeDialogLoading"
     :source-repo-url="selectedSourceRepo"
     :selected-revisions="selectedRevisions"
@@ -826,6 +893,34 @@ const performMerge = async (): Promise<void> => {
   letter-spacing: 0.3px;
 }
 
+.reset-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-background-primary);
+  color: var(--color-text-primary);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  outline: none;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+
+.reset-btn:hover:not(:disabled) {
+  border-color: var(--el-color-primary);
+  color: var(--el-color-primary);
+  background: var(--color-background-hover);
+}
+
+.reset-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .merge-btn:hover:not(:disabled) {
   background: #ffa500;
   border-color: #ff9500;
@@ -889,36 +984,6 @@ const performMerge = async (): Promise<void> => {
   outline: none;
   border-color: var(--color-primary);
   box-shadow: 0 0 0 2px var(--color-primary-transparent);
-}
-
-.app-button {
-  padding: 8px 16px;
-  border: none;
-  border-radius: 6px;
-  background: var(--color-background-hover);
-  color: var(--color-text-primary);
-  cursor: pointer;
-  font-size: 14px;
-  font-weight: 500;
-  transition: all 0.2s;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.app-button:hover:not(:disabled) {
-  background: var(--color-primary);
-  color: white;
-}
-
-.app-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.app-button.is-primary {
-  background: var(--color-primary);
-  color: white;
 }
 
 .app-button.is-large {

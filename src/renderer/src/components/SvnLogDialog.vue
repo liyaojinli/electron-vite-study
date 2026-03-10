@@ -258,33 +258,26 @@ watch(
   border-radius: 0 0 12px 12px;
 }
 
-.app-button {
+.dialog-footer .app-button {
   padding: 8px 16px;
   font-size: 12px;
   border-radius: 6px;
   border: 1px solid var(--color-border);
   background: var(--color-background-primary);
   color: var(--color-text-primary);
-  cursor: pointer;
-  transition: all 120ms ease;
 }
 
-.app-button:hover:not(:disabled) {
+.dialog-footer .app-button:hover:not(:disabled) {
   background: var(--color-background-secondary);
 }
 
-.app-button.is-primary {
+.dialog-footer .app-button.is-primary {
   background: var(--el-color-primary);
   color: #ffffff;
   border-color: var(--el-color-primary);
 }
 
-.app-button.is-primary:hover:not(:disabled) {
+.dialog-footer .app-button.is-primary:hover:not(:disabled) {
   opacity: 0.9;
-}
-
-.app-button:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
 }
 </style>

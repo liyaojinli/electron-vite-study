@@ -74,6 +74,20 @@ const saveRepository = async (index: number): Promise<void> => {
   try {
     const repo = repositories.value[index]
     const payload = repo.toJSON()
+    
+    // 检查本地路径是否重复
+    const normalizedPath = payload.url.trim().replace(/[\\/]+$/, '') // 去除尾部斜杠
+    const duplicateIndex = repositories.value.findIndex((r, i) => {
+      if (i === index) return false // 排除当前行
+      const existingPath = r.url.trim().replace(/[\\/]+$/, '')
+      return existingPath === normalizedPath
+    })
+    
+    if (duplicateIndex !== -1) {
+      alert(`本地路径已存在于「${repositories.value[duplicateIndex].alias || '未命名'}」仓库中，不允许重复添加。`)
+      return
+    }
+    
     const verifyResult = await api.verifyLocalRepository(payload)
     if (!verifyResult.ok) {
       alert(verifyResult.message || '本地路径验证失败。')

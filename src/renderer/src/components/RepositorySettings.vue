@@ -64,6 +64,20 @@ const saveRepository = async (index: number): Promise<void> => {
   try {
     const repo = repositories.value[index]
     const payload = repo.toJSON()
+    
+    // 检查远程地址是否重复
+    const normalizedUrl = payload.url.trim().replace(/\/+$/, '') // 去除尾部斜杠
+    const duplicateIndex = repositories.value.findIndex((r, i) => {
+      if (i === index) return false // 排除当前行
+      const existingUrl = r.url.trim().replace(/\/+$/, '')
+      return existingUrl === normalizedUrl
+    })
+    
+    if (duplicateIndex !== -1) {
+      alert(`远程地址已存在于「${repositories.value[duplicateIndex].alias || '未命名'}」仓库中，不允许重复添加。`)
+      return
+    }
+    
     const verifyResult = await window.api.verifyRepository(payload)
     if (!verifyResult.ok) {
       alert(verifyResult.message || 'SVN 连接验证失败。')

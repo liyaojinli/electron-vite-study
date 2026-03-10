@@ -481,6 +481,36 @@ body {
   background: var(--menu-hover);
 }
 
+.app-button {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  background: var(--color-background-hover);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.2s;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.app-button:hover:not(:disabled) {
+  background: var(--color-primary);
+  color: #ffffff;
+}
+
+.app-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.app-button.is-primary {
+  background: var(--color-primary);
+  color: #ffffff;
+}
+
 .icon-only svg {
   width: 18px;
   height: 18px;

@@ -37,168 +37,185 @@
       </div>
 
       <div class="merge-dialog-body">
-        <div v-if="results && results.length">
-          <div v-for="result in results" :key="getPanelKey(result)" class="result-panel">
-            <button
-              type="button"
-              class="panel-toggle-btn"
-              :title="isPanelExpanded(result) ? '收起' : '展开'"
-              @click="togglePanel(result)"
-            >
-              <ChevronDown v-if="isPanelExpanded(result)" :size="16" />
-              <ChevronRight v-else :size="16" />
-            </button>
-            <div class="result-panel-title">
-              <div class="result-panel-title-left">
-                <LoaderCircle
-                  v-if="result.isMerging"
-                  :size="16"
-                  class="is-spinning merging-icon-title"
-                />
-                <span>{{ result.targetRepoName }}</span>
-              </div>
-              <div class="result-panel-title-right">
-                <button
-                  v-if="canRetryRepository(result)"
-                  type="button"
-                  class="retry-repo-btn"
-                  :disabled="isRetryingRepository(result) || result.isMerging"
-                  @click.stop="handleRetryRepository(result)"
-                >
-                  <LoaderCircle
-                    v-if="isRetryingRepository(result)"
-                    :size="14"
-                    class="is-spinning"
-                  />
-                  <span>{{ isRetryingRepository(result) ? '重试中...' : '重试此仓库' }}</span>
-                </button>
-                <span :class="['result-status', getResultStatusClass(result)]">
-                  {{ getResultStatusText(result) }}
-                </span>
-              </div>
-            </div>
-            <div v-if="isPanelExpanded(result)" class="result-panel-body">
-              <!-- 版本进度信息 -->
-              <div
-                v-if="result.revisions && result.revisions.length > 1"
-                class="revisions-progress"
+        <div class="results-section">
+          <div v-if="results && results.length">
+            <div v-for="result in results" :key="getPanelKey(result)" class="result-panel">
+              <button
+                type="button"
+                class="panel-toggle-btn"
+                :title="isPanelExpanded(result) ? '收起' : '展开'"
+                @click="togglePanel(result)"
               >
-                <div class="revisions-title">版本进度:</div>
-                <div class="revisions-list">
-                  <div
-                    v-for="(rev, index) in result.revisions"
-                    :key="rev.revision"
-                    :class="[
-                      'revision-item',
-                      `revision-${rev.status}`,
-                      {
-                        'is-current': index === result.currentRevisionIndex,
-                        'is-resolved':
-                          rev.status === 'conflict' &&
-                          isRevisionConflictResolved(rev, result.targetRepoPath)
-                      }
-                    ]"
+                <ChevronDown v-if="isPanelExpanded(result)" :size="16" />
+                <ChevronRight v-else :size="16" />
+              </button>
+              <div class="result-panel-title">
+                <div class="result-panel-title-left">
+                  <LoaderCircle
+                    v-if="result.isMerging"
+                    :size="16"
+                    class="is-spinning merging-icon-title"
+                  />
+                  <span>{{ result.targetRepoName }}</span>
+                </div>
+                <div class="result-panel-title-right">
+                  <button
+                    v-if="canRetryRepository(result)"
+                    type="button"
+                    class="retry-repo-btn"
+                    :disabled="isRetryingRepository(result) || result.isMerging"
+                    @click.stop="handleRetryRepository(result)"
                   >
-                    <span class="revision-number">r{{ rev.revision }}</span>
-                    <span class="revision-status">
-                      {{
-                        getEffectiveRevisionStatus(
-                          rev,
-                          result.targetRepoPath,
-                          index,
-                          result.revisions
-                        )
-                      }}
-                    </span>
-                    <span v-if="index === result.currentRevisionIndex" class="current-indicator">
-                      ← 当前
-                    </span>
+                    <LoaderCircle
+                      v-if="isRetryingRepository(result)"
+                      :size="14"
+                      class="is-spinning"
+                    />
+                    <span>{{ isRetryingRepository(result) ? '重试中...' : '重试此仓库' }}</span>
+                  </button>
+                  <span :class="['result-status', getResultStatusClass(result)]">
+                    {{ getResultStatusText(result) }}
+                  </span>
+                </div>
+              </div>
+              <div v-if="isPanelExpanded(result)" class="result-panel-body">
+                <!-- 版本进度信息 -->
+                <div
+                  v-if="result.revisions && result.revisions.length > 1"
+                  class="revisions-progress"
+                >
+                  <div class="revisions-title">版本进度:</div>
+                  <div class="revisions-list">
+                    <div
+                      v-for="(rev, index) in result.revisions"
+                      :key="rev.revision"
+                      :class="[
+                        'revision-item',
+                        `revision-${rev.status}`,
+                        {
+                          'is-current': index === result.currentRevisionIndex,
+                          'is-resolved':
+                            rev.status === 'conflict' &&
+                            isRevisionConflictResolved(rev, result.targetRepoPath)
+                        }
+                      ]"
+                    >
+                      <span class="revision-number">r{{ rev.revision }}</span>
+                      <span class="revision-status">
+                        {{
+                          getEffectiveRevisionStatus(
+                            rev,
+                            result.targetRepoPath,
+                            index,
+                            result.revisions
+                          )
+                        }}
+                      </span>
+                      <span v-if="index === result.currentRevisionIndex" class="current-indicator">
+                        ← 当前
+                      </span>
+                    </div>
                   </div>
                 </div>
-              </div>
-              
-              <!-- 错误或消息提示（只在没有 revision 详细消息时显示） -->
-              <div
-                v-if="
-                  (!result.success || result.message) &&
-                  (!result.revisions ||
-                    !result.revisions.some((r) => r.message && r.status !== 'pending'))
-                "
-                :class="['result-message', result.success ? 'message-info' : 'message-error']"
-              >
-                {{ result.message }}
-              </div>
 
-              <!-- 版本详细信息（显示每个版本的消息） -->
-              <div
-                v-if="
-                  result.revisions &&
-                  result.revisions.some((r) => r.message && r.status !== 'pending')
-                "
-                class="revisions-messages"
-              >
+                <!-- 错误或消息提示（只在没有 revision 详细消息时显示） -->
                 <div
-                  v-for="rev in result.revisions.filter((r) => r.message && r.status !== 'pending')"
-                  :key="rev.revision"
-                  :class="[
-                    'revision-message',
-                    `status-${rev.status}`,
-                    { 'is-error': rev.status === 'failed' }
-                  ]"
+                  v-if="
+                    (!result.success || result.message) &&
+                    (!result.revisions ||
+                      !result.revisions.some((r) => r.message && r.status !== 'pending'))
+                  "
+                  :class="['result-message', result.success ? 'message-info' : 'message-error']"
                 >
-                  <span class="revision-label">r{{ rev.revision }}:</span>
-                  <span class="revision-text">{{ rev.message }}</span>
+                  {{ result.message }}
                 </div>
-              </div>
 
-              <div v-if="result.files && result.files.length" class="file-list">
-                <a
-                  v-for="file in result.files"
-                  :key="file"
-                  :class="[
-                    'result-file-link',
-                    getEffectiveFileStatus(file, result.targetRepoPath) === 'A' ? 'file-added' : '',
+                <!-- 版本详细信息（显示每个版本的消息） -->
+                <div
+                  v-if="
+                    result.revisions &&
+                    result.revisions.some((r) => r.message && r.status !== 'pending')
+                  "
+                  class="revisions-messages"
+                >
+                  <div
+                    v-for="rev in result.revisions.filter(
+                      (r) => r.message && r.status !== 'pending'
+                    )"
+                    :key="rev.revision"
+                    :class="[
+                      'revision-message',
+                      `status-${rev.status}`,
+                      { 'is-error': rev.status === 'failed' }
+                    ]"
+                  >
+                    <span class="revision-label">r{{ rev.revision }}:</span>
+                    <span class="revision-text">{{ rev.message }}</span>
+                  </div>
+                </div>
+
+                <div v-if="getDisplayEntries(result).length" class="file-list">
+                  <a
+                    v-for="file in getDisplayEntries(result)"
+                    :key="file"
+                    :class="[
+                      'result-file-link',
+                      getEffectiveFileStatus(file, result.targetRepoPath) === 'A'
+                        ? 'file-added'
+                        : '',
                       getEffectiveFileStatus(file, result.targetRepoPath) === 'M'
                         ? 'file-modified'
-                      : '',
-                    getEffectiveFileStatus(file, result.targetRepoPath) === 'D'
-                      ? 'file-deleted'
-                      : '',
-                    getEffectiveFileStatus(file, result.targetRepoPath) === 'C'
-                      ? 'file-conflict'
-                      : ''
-                  ]"
-                  :title="file"
-                  @click="handleFileClick(result, file)"
-                >
-                  {{ getDisplayFileName(file, result.targetRepoPath) }}
-                  <span
-                    v-if="
-                      getEffectiveFileStatus(file, result.targetRepoPath) === 'C' &&
-                      result.targetRepoPath &&
-                      isConflictResolved(
-                        result.targetRepoPath,
-                        parseFilePath(file, result.targetRepoPath)
-                      )
-                    "
-                    class="conflict-resolved-badge"
+                        : '',
+                      getEffectiveFileStatus(file, result.targetRepoPath) === 'D'
+                        ? 'file-deleted'
+                        : '',
+                      getEffectiveFileStatus(file, result.targetRepoPath) === 'C'
+                        ? 'file-conflict'
+                        : ''
+                    ]"
+                    :title="file"
+                    @click="handleFileClick(result, file)"
                   >
-                    [冲突已解决]
-                  </span>
-                </a>
-              </div>
-              <div
-                v-else-if="
-                  !result.message && (!result.revisions || !result.revisions.some((r) => r.message))
-                "
-                class="result-file-empty"
-              >
-                无文件
+                    {{ getDisplayFileName(file, result.targetRepoPath) }}
+                    <span
+                      v-if="
+                        getEffectiveFileStatus(file, result.targetRepoPath) === 'C' &&
+                        result.targetRepoPath &&
+                        isConflictResolved(
+                          result.targetRepoPath,
+                          parseFilePath(file, result.targetRepoPath)
+                        )
+                      "
+                      class="conflict-resolved-badge"
+                    >
+                      [冲突已解决]
+                    </span>
+                  </a>
+                </div>
+                <div
+                  v-else-if="
+                    !result.message &&
+                    (!result.revisions || !result.revisions.some((r) => r.message))
+                  "
+                  class="result-file-empty"
+                >
+                  无文件
+                </div>
               </div>
             </div>
           </div>
+          <div v-else class="result-file-empty">暂无合并结果</div>
         </div>
-        <div v-else class="result-file-empty">暂无合并结果</div>
+
+        <div class="execution-log-section">
+          <div class="execution-log-title">执行日志</div>
+          <div v-if="logs && logs.length" class="execution-log-list">
+            <div v-for="(line, index) in logs" :key="`${index}-${line}`" class="execution-log-line">
+              {{ line }}
+            </div>
+          </div>
+          <div v-else class="execution-log-empty">暂无执行日志</div>
+        </div>
       </div>
       <div class="merge-dialog-footer">
         <div class="status">
@@ -278,7 +295,9 @@ interface MergeSessionResult {
   success: boolean
   message: string
   files?: string[]
+  onlyFiles?: string[]
   isMerging?: boolean
+  hasTreeConflict: boolean
 }
 
 const getResultStatusClass = (result: MergeSessionResult): string => {
@@ -313,6 +332,7 @@ const getResultStatusText = (result: MergeSessionResult): string => {
 const props = defineProps<{
   visible: boolean
   results: MergeSessionResult[]
+  logs?: string[]
   isLoading: boolean
   sourceRepoUrl?: string
   selectedRevisions?: number[]
@@ -471,14 +491,14 @@ const parseFilePath = (fileEntry: string, repoPath?: string): string => {
   // File entries are in format like "C  path/to/file.txt" or "U  file.txt"
   // Remove the status prefix (first character and spaces)
   let filePath = fileEntry.substring(3).trim()
-  
+
   // Remove repo path prefix if provided
   if (repoPath && filePath.startsWith(repoPath)) {
     filePath = filePath.substring(repoPath.length)
     // Remove leading slash
     filePath = filePath.replace(/^[\\/]+/, '')
   }
-  
+
   return filePath
 }
 
@@ -496,6 +516,20 @@ const getEffectiveFileStatus = (fileEntry: string, repoPath?: string): string =>
 }
 
 const hasUnresolvedConflicts = (result: MergeSessionResult): boolean => {
+  if (result.hasTreeConflict) {
+    return true
+  }
+
+  if (
+    result.revisions?.some(
+      (revision) =>
+        revision.status === 'conflict' &&
+        (!result.targetRepoPath || !isRevisionConflictResolved(revision, result.targetRepoPath))
+    )
+  ) {
+    return true
+  }
+
   if (!result.files || !result.targetRepoPath) return false
   return result.files.some(
     (fileEntry) => getEffectiveFileStatus(fileEntry, result.targetRepoPath) === 'C'
@@ -511,15 +545,20 @@ const getDisplayFileName = (fileEntry: string, repoPath?: string): string => {
   return statusPrefix + relativePath
 }
 
+const getDisplayEntries = (result: MergeSessionResult): string[] => {
+  return result.onlyFiles || result.files || []
+}
+
 const isConflict = (fileEntry: string, repoPath?: string): boolean => {
   return getEffectiveFileStatus(fileEntry, repoPath) === 'C'
 }
 
 const getCommitFilePaths = (result: MergeSessionResult): string[] => {
-  if (!result.files || !result.targetRepoPath) return []
+  const entries = result.onlyFiles || result.files || []
+  if (entries.length === 0 || !result.targetRepoPath) return []
 
   const commitableStatuses = new Set(['A', 'M', 'D', 'R'])
-  const filePaths = result.files
+  const filePaths = entries
     .filter((fileEntry) =>
       commitableStatuses.has(getEffectiveFileStatus(fileEntry, result.targetRepoPath))
     )
@@ -541,6 +580,12 @@ const handleFileClick = (result: MergeSessionResult, fileEntry: string): void =>
   }
 
   selectedFilePath.value = filePath
+
+  // 检查是否为目录，目录不可点击查看
+  if (filePath.endsWith('/') || filePath.endsWith('\\')) {
+    console.log('[MergeProgressDialog] 点击了目录，暂不支持查看目录内容:', filePath)
+    return
+  }
 
   if (isConflict(fileEntry, result.targetRepoPath)) {
     selectedRepoPath.value = result.targetRepoPath
@@ -587,16 +632,16 @@ const handleConflictResolved = async (): Promise<void> => {
         try {
           // 将 Vue 响应式对象转换为纯对象，避免 IPC 克隆错误
           const plainSession = JSON.parse(JSON.stringify(currentResult))
-          
+
           const updatedResult = await api.mergeNextRevision(
             currentResult.sourceRepoUrl,
             currentResult.targetRepoPath,
             plainSession
           )
-          
+
           // 通知父组件更新结果
           emit('update-result', updatedResult)
-          
+
           // 刷新显示
           emit('refresh')
         } catch (error) {
@@ -661,11 +706,11 @@ const isConflictResolved = (repoPath: string, filePath: string): boolean => {
 const isRevisionConflictResolved = (revision: RevisionMergeState, repoPath: string): boolean => {
   if (revision.status !== 'conflict') return false
   if (!revision.files || revision.files.length === 0) return false
-  
+
   // 检查该版本的所有冲突文件是否都已解决
   const conflictFiles = revision.files.filter((f) => f.startsWith('C'))
   if (conflictFiles.length === 0) return false
-  
+
   return conflictFiles.every((fileEntry) => {
     const filePath = parseFilePath(fileEntry, repoPath)
     return isConflictResolved(repoPath, filePath)
@@ -682,7 +727,7 @@ const getEffectiveRevisionStatus = (
   if (revision.status === 'conflict' && isRevisionConflictResolved(revision, repoPath)) {
     return '冲突已解决'
   }
-  
+
   // 非 pending 状态直接返回对应文本
   if (revision.status !== 'pending') {
     return revision.status === 'merging'
@@ -693,7 +738,7 @@ const getEffectiveRevisionStatus = (
           ? '冲突'
           : '失败'
   }
-  
+
   // pending 状态：检查上一个版本是否有冲突
   if (index > 0) {
     const prevRevision = revisions[index - 1]
@@ -702,7 +747,7 @@ const getEffectiveRevisionStatus = (
       return '待解决上一条提交记录的冲突'
     }
   }
-  
+
   // 其他情况（第一条或上一条是成功/失败），显示待处理
   return '待处理'
 }
@@ -713,6 +758,17 @@ const handleCommit = async (): Promise<void> => {
   // 检查所有冲突文件是否都已解决
   const unresolvedConflicts: string[] = []
   for (const result of props.results) {
+    if (result.hasTreeConflict) {
+      unresolvedConflicts.push(`${result.targetRepoName}: 检测到目录冲突（Tree Conflict）`)
+      continue
+    }
+
+    const hasRevisionConflict = result.revisions?.some((revision) => revision.status === 'conflict')
+    if (hasRevisionConflict && result.targetRepoPath && hasUnresolvedConflicts(result)) {
+      unresolvedConflicts.push(`${result.targetRepoName}: 存在未解决的冲突版本`)
+      continue
+    }
+
     if (result.success && result.files && result.targetRepoPath) {
       const conflictFiles = result.files.filter((f) => isConflict(f, result.targetRepoPath))
       for (const fileEntry of conflictFiles) {
@@ -742,12 +798,12 @@ const handleCommit = async (): Promise<void> => {
       try {
         const statusResult = await api.getSvnStatus(result.targetRepoPath!)
         const statusMap = new Map(statusResult.files.map((f) => [f.path, f.status]))
-        
+
         const filesWithStatus: FileWithStatus[] = commitFilePaths.map((filePath) => ({
           path: filePath,
           status: statusMap.get(filePath) || 'M' // 默认为 M
         }))
-        
+
         repositories.push({
           targetRepoName: result.targetRepoName,
           targetRepoPath: result.targetRepoPath!,
@@ -791,7 +847,7 @@ const handleConfirmCommit = async (confirmedRepoPaths: string[]): Promise<void> 
   isCommitting.value = true
   const successRepos = props.results.filter((r) => r.success && r.targetRepoPath)
   const errors: string[] = []
-  
+
   // 清空日志并准备收集新的日志
   commitLogs.value = []
 
@@ -820,7 +876,7 @@ const handleConfirmCommit = async (confirmedRepoPaths: string[]): Promise<void> 
 
       // 如果用户名和密码都为空，则不传递认证信息，使用缓存的凭据
       const hasAuth = commitUsername.value.trim() !== '' && commitPassword.value.trim() !== ''
-      
+
       const commitResult = hasAuth
         ? await api.svnCommit(
             result.targetRepoPath!,
@@ -863,7 +919,7 @@ const handleConfirmCommit = async (confirmedRepoPaths: string[]): Promise<void> 
 // 关闭日志查看器
 const handleLogViewerClose = (): void => {
   logViewerVisible.value = false
-  
+
   // 如果有成功的提交，触发成功事件并关闭对话框
   const hasSuccess = commitLogs.value.some((log) => log.success)
   if (hasSuccess) {
@@ -950,6 +1006,63 @@ const handleLogViewerClose = (): void => {
   color: #eab308;
   font-weight: bold;
 }
+.execution-log-section {
+  width: 320px;
+  min-width: 280px;
+  max-width: 40%;
+  height: 100%;
+  flex-shrink: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-background-primary);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.execution-log-title {
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  background: var(--color-background-secondary);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.execution-log-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 12px;
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.8;
+}
+
+.execution-log-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.execution-log-empty {
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+@media (max-width: 1200px) {
+  .merge-dialog-body {
+    flex-direction: column;
+  }
+
+  .execution-log-section {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    height: 180px;
+  }
+}
+
 .retry-repo-btn {
   height: 26px;
   padding: 0 10px;
@@ -1195,8 +1308,8 @@ const handleLogViewerClose = (): void => {
   z-index: 2000;
 }
 .merge-dialog {
-  width: 60vw;
-  height: 60vh;
+  width: 80vw;
+  height: 80vh;
   display: flex;
   flex-direction: column;
   background: var(--color-background-primary);
@@ -1215,7 +1328,9 @@ const handleLogViewerClose = (): void => {
 .merge-title {
   font-weight: 700;
 }
+
 .close-btn {
+  overflow: hidden;
   background: transparent;
   border: none;
   font-size: 14px;
@@ -1235,6 +1350,7 @@ const handleLogViewerClose = (): void => {
   align-items: center;
   gap: 12px;
 }
+
 .commit-field-message {
   flex: 1;
 }
@@ -1267,10 +1383,16 @@ const handleLogViewerClose = (): void => {
 .merge-dialog-body {
   padding: 12px 16px;
   flex: 1;
-  overflow-y: auto;
+  overflow: hidden;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   gap: 8px;
+}
+
+.results-section {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 .current-target {
   font-size: 13px;

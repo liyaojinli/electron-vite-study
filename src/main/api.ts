@@ -58,11 +58,51 @@ export interface MergeSessionResult {
   success: boolean // 整体是否成功（无失败的版本）
   message: string
   files?: string[] // 当前所有受影响的文件（累积）
+  onlyFiles?: string[] // 仅文件（排除目录）的受影响文件列表
   isMerging?: boolean // 是否正在 merge 中
+  hasTreeConflict: boolean // 是否检测到目录冲突（Tree Conflict）
 }
 
 const getAbsoluteFilePath = (repoPath: string, filePath: string): string => {
   return path.isAbsolute(filePath) ? filePath : path.join(repoPath, filePath)
+}
+
+const parseMergeOutputEntryPath = (entry: string): string => {
+  const match = entry.match(/^[A-Z?!X]\s+(.+)$/)
+  return (match ? match[1] : entry).trim()
+}
+
+const filterOnlyFiles = (repoPath: string, entries?: string[]): string[] => {
+  if (!entries || entries.length === 0) return []
+
+  const dirCache = new Map<string, boolean>()
+  const onlyFiles: string[] = []
+
+  for (const entry of entries) {
+    const relativePath = parseMergeOutputEntryPath(entry)
+    if (!relativePath || relativePath === '.' || relativePath === './' || relativePath === '.\\') {
+      continue
+    }
+
+    let isDirectory = dirCache.get(relativePath)
+    if (isDirectory === undefined) {
+      try {
+        const fullPath = path.isAbsolute(relativePath)
+          ? relativePath
+          : path.join(repoPath, relativePath)
+        isDirectory = fs.existsSync(fullPath) && fs.statSync(fullPath).isDirectory()
+      } catch {
+        isDirectory = false
+      }
+      dirCache.set(relativePath, isDirectory)
+    }
+
+    if (!isDirectory) {
+      onlyFiles.push(entry)
+    }
+  }
+
+  return onlyFiles
 }
 
 const findLatestFileByPrefix = (dirPath: string, prefix: string): string | null => {
@@ -190,7 +230,7 @@ const parseSvnInfoUrlFromXml = (xml: string): string => {
  * Parse svn merge output to extract affected files.
  * Format: "STATUS   path/to/file"
  * STATUS can be: U (Updated), G (merGed), C (Conflict), A (Added), D (Deleted), etc.
- * 
+ *
  * Note: U and G are mapped to M to match svn status output (for consistent UI display)
  */
 const parseSvnMergeOutput = (output: string): Array<{ status: string; path: string }> => {
@@ -210,7 +250,7 @@ const parseSvnMergeOutput = (output: string): Array<{ status: string; path: stri
     // Example: "U    path/to/file.txt"
     //          "_M   path/to/file.txt"
     //          "C    conflict.txt"
-    
+
     // Match status lines with optional leading spaces, e.g.:
     // "   C path/to/file", "U    path/to/file", " G   path/to/file"
     const match = line.match(/^\s*([ACDMRUG])(?:\s+[ACDMRUG])?\s+(.+)$/)
@@ -227,12 +267,22 @@ const parseSvnMergeOutput = (output: string): Array<{ status: string; path: stri
     }
 
     // Map U (Updated) and G (merGed) to M (Modified)
-    const finalStatus = (primaryStatus === 'U' || primaryStatus === 'G') ? 'M' : primaryStatus
+    const finalStatus = primaryStatus === 'U' || primaryStatus === 'G' ? 'M' : primaryStatus
 
     files.push({ status: finalStatus, path: filePath })
   }
 
   return files
+}
+
+const parseSvnTreeConflictCount = (output: string): number => {
+  if (!output) return 0
+
+  const match = output.match(/Tree\s+conflicts:\s*(\d+)/i)
+  if (!match) return 0
+
+  const count = Number.parseInt(match[1], 10)
+  return Number.isNaN(count) ? 0 : count
 }
 
 const normalizeRemotePathPart = (value: string): string => {
@@ -313,7 +363,9 @@ const execRemoteSvnCat = (
   let lastError: unknown
 
   for (const candidate of candidates) {
-    const cmd = revision ? `svn cat -r ${revision} "${candidate}"${getSslTrustFlags(candidate)}` : `svn cat "${candidate}"${getSslTrustFlags(candidate)}`
+    const cmd = revision
+      ? `svn cat -r ${revision} "${candidate}"${getSslTrustFlags(candidate)}`
+      : `svn cat "${candidate}"${getSslTrustFlags(candidate)}`
     console.log('[getSvnFileContent] Executing:', cmd)
     try {
       return execSync(cmd, { encoding: 'utf-8' })
@@ -1299,44 +1351,75 @@ export const apiHandlers = {
       throw new Error('未指定需要合并的版本')
     }
 
-    // 在 merge 前，先获取要合并的 revisions 影响的文件列表，并对这些文件执行 update
-    try {
-      console.log('[performSingleMerge] 获取影响文件列表...')
-      const changedFilesGroups = await apiHandlers.getSvnChangedFiles(
-        sourceRepo.url,
-        sortedRevisions
-      )
+    // 在 merge 前，先对整个仓库执行全局 update
+    // 如果 update 发生冲突，说明本地工作副本有未提交的修改与服务器冲突，应该先解决
+    console.log('[performSingleMerge] 执行全局 update...')
+    const updateResult = await apiHandlers.svnUpdate(targetRepo.url)
 
-      // 收集所有影响的文件路径（去重）
-      const affectedFilePaths = new Set<string>()
-      for (const group of changedFilesGroups) {
-        for (const file of group.files) {
-          // 跳过删除的文件（D 状态），因为删除的文件不需要 update
-          if (file.status !== 'D') {
-            affectedFilePaths.add(file.path)
-          }
-        }
+    if (!updateResult.success) {
+      console.error('[performSingleMerge] Update 失败:', updateResult.message)
+      // 初始化空的版本状态列表
+      const revisionStates: RevisionMergeState[] = sortedRevisions.map((rev) => ({
+        revision: rev,
+        status: 'pending',
+        files: [],
+        message: ''
+      }))
+
+      return {
+        targetRepoName: targetRepo.alias,
+        targetRepoUrl: targetRepo.url,
+        targetRepoPath: targetRepo.url,
+        sourceRepoUrl: sourceRepo.url,
+        revisions: revisionStates,
+        currentRevisionIndex: -1,
+        allCompleted: false,
+        success: false,
+        message: `Update 失败，无法继续 merge: ${updateResult.message}`,
+        files: [],
+        onlyFiles: [],
+        isMerging: false,
+        hasTreeConflict: false
       }
-
-      if (affectedFilePaths.size > 0) {
-        const filePaths = Array.from(affectedFilePaths)
-        console.log(`[performSingleMerge] 准备 update ${filePaths.length} 个影响文件...`)
-
-        // 对这些文件执行 update
-        const updateResult = await apiHandlers.svnUpdate(targetRepo.url, filePaths)
-        if (!updateResult.success) {
-          console.warn('[performSingleMerge] 文件 update 失败:', updateResult.message)
-          // 即使 update 失败，也继续尝试 merge
-        } else {
-          console.log('[performSingleMerge] 影响文件 update 成功')
-        }
-      } else {
-        console.log('[performSingleMerge] 没有需要 update 的文件')
-      }
-    } catch (updateError) {
-      console.warn('[performSingleMerge] 预 update 失败，继续执行 merge:', updateError)
-      // 即使预 update 失败，也继续尝试 merge
     }
+
+    // 检查 update 后是否有冲突
+    const statusResult = await apiHandlers.getSvnStatus(targetRepo.url)
+    const hasUpdateConflict = statusResult.files.some((f) => f.status === 'C')
+
+    if (hasUpdateConflict) {
+      console.error('[performSingleMerge] Update 后检测到冲突，终止 merge')
+      const conflictFiles = statusResult.files
+        .filter((f) => f.status === 'C')
+        .map((f) => `${f.status}  ${f.path}`)
+
+      // 初始化空的版本状态列表
+      const revisionStates: RevisionMergeState[] = sortedRevisions.map((rev) => ({
+        revision: rev,
+        status: 'pending',
+        files: [],
+        message: ''
+      }))
+
+      return {
+        targetRepoName: targetRepo.alias,
+        targetRepoUrl: targetRepo.url,
+        targetRepoPath: targetRepo.url,
+        sourceRepoUrl: sourceRepo.url,
+        revisions: revisionStates,
+        currentRevisionIndex: -1,
+        allCompleted: false,
+        success: false,
+        message: `Update 发生冲突，请先解决本地冲突后再执行 merge。冲突文件数: ${conflictFiles.length}`,
+        files: conflictFiles,
+        onlyFiles: filterOnlyFiles(targetRepo.url, conflictFiles),
+        isMerging: false,
+        hasTreeConflict: false
+      }
+    }
+
+    console.log('[performSingleMerge] Update 成功，开始 merge...')
+    console.log('[performSingleMerge] Update 日志:', updateResult.logs)
 
     // 初始化所有版本状态为 pending
     const revisionStates: RevisionMergeState[] = sortedRevisions.map((rev) => ({
@@ -1370,19 +1453,27 @@ export const apiHandlers = {
         // Parse merge output to get only files affected by this merge (not pre-existing local changes)
         const mergedFiles = parseSvnMergeOutput(mergeResult.stdout)
         const affectedFiles = mergedFiles.map((f) => `${f.status}  ${f.path}`)
-        const hasConflict = mergedFiles.some((f) => f.status === 'C')
+        const treeConflictCount = parseSvnTreeConflictCount(
+          `${mergeResult.stdout || ''}\n${mergeResult.stderr || ''}`
+        )
+        const hasConflict = mergedFiles.some((f) => f.status === 'C') || treeConflictCount > 0
+        const finalAffectedFiles = treeConflictCount > 0 ? [] : affectedFiles
 
         console.log(
           '[performSingleMerge] Merge 结果: hasConflict=',
           hasConflict,
           'affectedFiles=',
-          affectedFiles.length
+          finalAffectedFiles.length
         )
 
         // 更新当前版本的状态
         revisionStates[currentIndex].status = hasConflict ? 'conflict' : 'success'
-        revisionStates[currentIndex].files = affectedFiles
-        revisionStates[currentIndex].message = hasConflict ? '合并冲突' : '合并成功'
+        revisionStates[currentIndex].files = finalAffectedFiles
+        revisionStates[currentIndex].message = hasConflict
+          ? treeConflictCount > 0
+            ? `合并冲突（Tree conflicts: ${treeConflictCount}）`
+            : '合并冲突'
+          : '合并成功'
 
         // 累积所有文件
         const allFiles = new Set<string>()
@@ -1404,11 +1495,13 @@ export const apiHandlers = {
             success: true,
             message: `版本 r${currentRevision} 合并冲突`,
             files: Array.from(allFiles),
-            isMerging: false
+            onlyFiles: filterOnlyFiles(targetRepo.url, Array.from(allFiles)),
+            isMerging: false,
+            hasTreeConflict: treeConflictCount > 0
           }
           console.log(
             '[performSingleMerge] 返回冲突结果: 冲突文件数=',
-            affectedFiles.filter((f) => f.startsWith('C')).length
+            finalAffectedFiles.filter((f) => f.startsWith('C')).length
           )
           return conflictResult
         }
@@ -1426,24 +1519,50 @@ export const apiHandlers = {
         // 即使出错，也尝试获取文件列表
         let affectedFiles: string[] = []
         let hasConflict = false
+        let treeConflictCount = 0
         try {
           // Try to parse merge output from error if available (e.g., conflict causes non-zero exit)
           let mergedFiles: Array<{ status: string; path: string }> = []
-          if (error && typeof error === 'object' && 'stdout' in error && typeof error.stdout === 'string') {
+          if (
+            error &&
+            typeof error === 'object' &&
+            'stdout' in error &&
+            typeof error.stdout === 'string'
+          ) {
             mergedFiles = parseSvnMergeOutput(error.stdout)
             console.log('[performSingleMerge] 从错误输出解析到', mergedFiles.length, '个文件')
           }
 
+          const errorStdout =
+            error &&
+            typeof error === 'object' &&
+            'stdout' in error &&
+            typeof error.stdout === 'string'
+              ? error.stdout
+              : ''
+          const errorStderr =
+            error &&
+            typeof error === 'object' &&
+            'stderr' in error &&
+            typeof error.stderr === 'string'
+              ? error.stderr
+              : ''
+          treeConflictCount = parseSvnTreeConflictCount(`${errorStdout}\n${errorStderr}`)
+
           // If we got files from merge output, use them; otherwise fall back to svn status
           if (mergedFiles.length > 0) {
             affectedFiles = mergedFiles.map((f) => `${f.status}  ${f.path}`)
-            hasConflict = mergedFiles.some((f) => f.status === 'C')
+            hasConflict = mergedFiles.some((f) => f.status === 'C') || treeConflictCount > 0
           } else {
             const statusResult = await apiHandlers.getSvnStatus(targetRepo.url)
             affectedFiles = statusResult.files
               .map((f) => `${f.status}  ${f.path}`)
               .filter((f) => ['C', 'M', 'A', 'D', 'R'].some((st) => f.startsWith(st)))
-            hasConflict = statusResult.files.some((f) => f.status === 'C')
+            hasConflict = statusResult.files.some((f) => f.status === 'C') || treeConflictCount > 0
+          }
+
+          if (treeConflictCount > 0) {
+            affectedFiles = []
           }
 
           console.log(
@@ -1459,7 +1578,8 @@ export const apiHandlers = {
         if (hasConflict) {
           revisionStates[currentIndex].status = 'conflict'
           revisionStates[currentIndex].files = affectedFiles
-          revisionStates[currentIndex].message = '合并冲突'
+          revisionStates[currentIndex].message =
+            treeConflictCount > 0 ? `合并冲突（Tree conflicts: ${treeConflictCount}）` : '合并冲突'
 
           const allFiles = new Set<string>()
           revisionStates.forEach((rev) => {
@@ -1477,7 +1597,9 @@ export const apiHandlers = {
             success: true,
             message: `版本 r${currentRevision} 合并冲突`,
             files: Array.from(allFiles),
-            isMerging: false
+            onlyFiles: filterOnlyFiles(targetRepo.url, Array.from(allFiles)),
+            isMerging: false,
+            hasTreeConflict: treeConflictCount > 0
           }
         }
 
@@ -1503,7 +1625,9 @@ export const apiHandlers = {
           success: false,
           message: `版本 r${currentRevision} 合并失败: ${error instanceof Error ? error.message : '未知错误'}`,
           files: Array.from(allFiles),
-          isMerging: false
+          onlyFiles: filterOnlyFiles(targetRepo.url, Array.from(allFiles)),
+          isMerging: false,
+          hasTreeConflict: false
         }
 
         console.log('[performSingleMerge] 返回失败结果:', JSON.stringify(failureResult, null, 2))
@@ -1529,7 +1653,9 @@ export const apiHandlers = {
       success: true,
       message: '全部合并成功',
       files: Array.from(allFiles),
-      isMerging: false
+      onlyFiles: filterOnlyFiles(targetRepo.url, Array.from(allFiles)),
+      isMerging: false,
+      hasTreeConflict: false
     }
 
     console.log('[performSingleMerge] 返回成功结果: 总文件数=', allFiles.size)
@@ -1606,6 +1732,7 @@ export const apiHandlers = {
         const allFiles = new Set(currentSession.files || [])
         affectedFiles.forEach((f) => allFiles.add(f))
         currentSession.files = Array.from(allFiles)
+        currentSession.onlyFiles = filterOnlyFiles(targetRepoPath, currentSession.files)
 
         // 如果有冲突，停止并返回，等待用户解决
         if (hasConflict) {
@@ -1643,6 +1770,7 @@ export const apiHandlers = {
           const allFiles = new Set(currentSession.files || [])
           affectedFiles.forEach((f) => allFiles.add(f))
           currentSession.files = Array.from(allFiles)
+          currentSession.onlyFiles = filterOnlyFiles(targetRepoPath, currentSession.files)
 
           return currentSession
         }
