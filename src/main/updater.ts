@@ -167,6 +167,11 @@ export const checkForUpdates = async (): Promise<void> => {
  */
 export const downloadUpdate = async (): Promise<void> => {
   if (!isUpdateEnabled()) {
+    console.log('[Updater] 当前平台不支持自动更新')
+    sendUpdateStatus({
+      status: 'error',
+      error: '当前平台不支持自动更新（仅支持 Windows 打包版本）'
+    })
     return
   }
 
@@ -187,10 +192,29 @@ export const downloadUpdate = async (): Promise<void> => {
  */
 export const quitAndInstall = (): void => {
   if (!isUpdateEnabled()) {
+    console.log('[Updater] 当前平台不支持自动更新')
+    sendUpdateStatus({
+      status: 'error',
+      error: '当前平台不支持自动更新（仅支持 Windows 打包版本）'
+    })
     return
   }
 
-  console.log('[Updater] 退出并安装更新...')
-  // 立即重启安装，不等待其他窗口关闭
-  autoUpdater.quitAndInstall(false, true)
+  console.log('[Updater] 准备退出并安装更新...')
+
+  // 使用 setImmediate 确保 IPC 响应先发送到渲染进程
+  setImmediate(() => {
+    console.log('[Updater] 正在执行安装...')
+    
+    // autoUpdater.quitAndInstall() 会自动：
+    // 1. 关闭所有窗口
+    // 2. 退出应用
+    // 3. 启动安装程序
+    // 4. 安装完成后重启应用（如果 isForceRunAfter=true）
+    
+    // 参数说明：
+    // isSilent=false: 显示安装界面（让用户看到安装过程）
+    // isForceRunAfter=true: 安装完成后自动启动应用
+    autoUpdater.quitAndInstall(false, true)
+  })
 }

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ref, onMounted, onUnmounted } from 'vue'
 import { Cloud, HardDrive, GitMerge, RefreshCw } from 'lucide-vue-next'
 
 type MenuItem = {
@@ -7,12 +8,26 @@ type MenuItem = {
   icon?: typeof Cloud
 }
 
+interface UpdateInfo {
+  status: string
+  version?: string
+  progress?: number
+  error?: string
+  releaseNotes?: string
+  releaseDate?: string
+}
+
 const props = defineProps<{ items: MenuItem[]; activeId?: string; isDark: boolean }>()
 const emit = defineEmits<{
   (event: 'select', id: string): void
   (event: 'toggle-theme'): void
   (event: 'check-update'): void
 }>()
+
+const appVersion = ref<string>('')
+const showReleaseDialog = ref(false)
+const updateInfo = ref<UpdateInfo | null>(null)
+let unsubscribe: (() => void) | null = null
 
 const handleSelect = (id: string): void => {
   emit('select', id)
@@ -25,6 +40,42 @@ const handleToggleTheme = (): void => {
 const handleCheckUpdate = (): void => {
   emit('check-update')
 }
+
+const handleVersionClick = (): void => {
+  if (updateInfo.value && updateInfo.value.releaseNotes) {
+    showReleaseDialog.value = true
+  }
+}
+
+const formatReleaseNotes = (notes: string): string => {
+  if (!notes) return '暂无更新说明'
+  
+  return notes
+    .replace(/^### (.+)$/gm, '<h3 class="font-semibold text-sm mb-1 mt-2">$1</h3>')
+    .replace(/^## (.+)$/gm, '<h2 class="font-bold text-base mb-2 mt-3">$1</h2>')
+    .replace(/^- (.+)$/gm, '<li class="ml-4">$1</li>')
+    .replace(/\n/g, '<br>')
+    .replace(/(<li.*<\/li>)/g, '<ul class="list-disc space-y-1 my-2">$1</ul>')
+}
+
+onMounted(async () => {
+  if (window.appApi) {
+    appVersion.value = await window.appApi.getVersion()
+  }
+  
+  // 监听更新状态
+  if (window.updater) {
+    unsubscribe = window.updater.onUpdateStatus((info: UpdateInfo) => {
+      updateInfo.value = info
+    })
+  }
+})
+
+onUnmounted(() => {
+  if (unsubscribe) {
+    unsubscribe()
+  }
+})
 </script>
 
 <template>
@@ -61,8 +112,42 @@ const handleCheckUpdate = (): void => {
       >
         <RefreshCw :size="16" :stroke-width="2" />
         <span class="app-menu-item-label">检查更新</span>
+        <span 
+          v-if="appVersion" 
+          class="version-badge"
+          :class="{ 'version-badge-clickable': updateInfo?.releaseNotes }"
+          @click.stop="handleVersionClick"
+          :title="updateInfo?.releaseNotes ? '点击查看更新说明' : ''"
+        >
+          v{{ appVersion }}
+        </span>
       </button>
     </div>
+    
+    <!-- 更新说明对话框 -->
+    <el-dialog
+      v-model="showReleaseDialog"
+      title="更新说明"
+      width="500px"
+      :append-to-body="true"
+    >
+      <div class="release-notes-content">
+        <div v-if="updateInfo?.version" class="mb-3">
+          <span class="text-sm text-gray-600 dark:text-gray-400">版本: </span>
+          <span class="text-sm font-semibold text-gray-900 dark:text-gray-100">v{{ updateInfo.version }}</span>
+        </div>
+        <div v-if="updateInfo?.releaseDate" class="mb-3">
+          <span class="text-sm text-gray-600 dark:text-gray-400">发布日期: </span>
+          <span class="text-sm text-gray-900 dark:text-gray-100">{{ updateInfo.releaseDate }}</span>
+        </div>
+        <!-- eslint-disable vue/no-v-html -->
+        <div 
+          class="release-notes text-sm text-gray-700 dark:text-gray-300"
+          v-html="formatReleaseNotes(updateInfo?.releaseNotes || '')"
+        />
+        <!-- eslint-enable vue/no-v-html -->
+      </div>
+    </el-dialog>
   </aside>
 </template>
 
@@ -89,6 +174,55 @@ const handleCheckUpdate = (): void => {
 .app-menu-footer {
   margin-top: auto;
   border-top: 1px solid var(--color-border);
+}
+
+.version-badge {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  opacity: 0.6;
+  margin-left: auto;
+  padding-left: 8px;
+  transition: opacity 0.2s;
+}
+
+.version-badge-clickable {
+  cursor: pointer;
+  opacity: 0.8;
+}
+
+.version-badge-clickable:hover {
+  opacity: 1;
+  color: var(--color-primary);
+}
+
+.release-notes-content {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.release-notes :deep(h2) {
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin-top: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.release-notes :deep(h3) {
+  font-size: 0.8rem;
+  font-weight: 500;
+  margin-top: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+
+.release-notes :deep(ul) {
+  list-style-type: disc;
+  padding-left: 1.25rem;
+  margin: 0.5rem 0;
+}
+
+.release-notes :deep(li) {
+  margin: 0.25rem 0;
+  line-height: 1.4;
 }
 
 .app-menu-item {

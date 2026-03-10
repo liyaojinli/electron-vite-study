@@ -27,6 +27,14 @@ const theme = {
   }
 }
 
+// 应用相关 API
+const appApi = {
+  // 获取应用版本号
+  getVersion: (): Promise<string> => {
+    return ipcRenderer.invoke('app:getVersion')
+  }
+}
+
 // 更新相关 API
 const updater = {
   // 手动检查更新
@@ -79,6 +87,7 @@ try {
   contextBridge.exposeInMainWorld('electron', electronAPI)
   contextBridge.exposeInMainWorld('api', api)
   contextBridge.exposeInMainWorld('theme', theme)
+  contextBridge.exposeInMainWorld('appApi', appApi)
   contextBridge.exposeInMainWorld('updater', updater)
 } catch (error) {
   console.error('Failed to expose API via contextBridge:', error)

@@ -2,7 +2,7 @@
   <Transition name="slide-fade">
     <div
       v-if="showNotification"
-      class="fixed bottom-4 right-4 max-w-md bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 overflow-hidden z-50"
+      class="fixed bottom-4 right-4 max-w-sm bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 overflow-hidden z-50"
     >
       <!-- 进度条 -->
       <div
@@ -36,27 +36,6 @@
         <p class="text-sm text-gray-600 dark:text-gray-400 mb-3">
           {{ statusMessage }}
         </p>
-
-        <!-- 发布说明 -->
-        <div
-          v-if="updateInfo.status === 'available' && updateInfo.releaseNotes"
-          class="mb-3 border-t border-gray-200 dark:border-gray-700 pt-3"
-        >
-          <button
-            class="flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400 hover:underline mb-2"
-            @click="showReleaseNotes = !showReleaseNotes"
-          >
-            <span>{{ showReleaseNotes ? '▼' : '▶' }}</span>
-            <span>{{ showReleaseNotes ? '隐藏' : '查看' }}更新内容</span>
-          </button>
-          <!-- eslint-disable vue/no-v-html -->
-          <div
-            v-if="showReleaseNotes"
-            class="text-xs text-gray-700 dark:text-gray-300 bg-gray-50 dark:bg-gray-900 rounded p-3 max-h-48 overflow-y-auto release-notes"
-            v-html="formatReleaseNotes(updateInfo.releaseNotes)"
-          />
-          <!-- eslint-enable vue/no-v-html -->
-        </div>
 
         <!-- 操作按钮 -->
         <div v-if="showActions" class="flex gap-2">
@@ -105,7 +84,6 @@ const updateInfo = ref<UpdateInfo>({
 })
 
 const showNotification = ref(false)
-const showReleaseNotes = ref(false)
 let unsubscribe: (() => void) | null = null
 
 // 状态图标
@@ -194,25 +172,6 @@ const showActions = computed(() => {
 // 关闭通知
 const closeNotification = (): void => {
   showNotification.value = false
-  showReleaseNotes.value = false
-}
-
-// 格式化发布说明（简单的 markdown 转 HTML）
-const formatReleaseNotes = (notes: string): string => {
-  if (!notes) return ''
-
-  return (
-    notes
-      // 转换标题
-      .replace(/^### (.+)$/gm, '<h3 class="font-semibold text-sm mb-1 mt-2">$1</h3>')
-      .replace(/^## (.+)$/gm, '<h2 class="font-bold text-base mb-2 mt-3">$1</h2>')
-      // 转换列表项
-      .replace(/^- (.+)$/gm, '<li class="ml-4">$1</li>')
-      // 转换换行
-      .replace(/\n/g, '<br>')
-      // 包裹列表
-      .replace(/(<li.*<\/li>)/g, '<ul class="list-disc space-y-1 my-2">$1</ul>')
-  )
 }
 
 // 下载更新
@@ -290,49 +249,5 @@ defineExpose({
 .slide-fade-leave-to {
   transform: translateX(100%);
   opacity: 0;
-}
-
-.release-notes :deep(h2) {
-  font-size: 0.9rem;
-  font-weight: 600;
-  margin-top: 0.75rem;
-  margin-bottom: 0.5rem;
-  color: var(--color-text-primary);
-}
-
-.release-notes :deep(h3) {
-  font-size: 0.8rem;
-  font-weight: 500;
-  margin-top: 0.5rem;
-  margin-bottom: 0.25rem;
-  color: var(--color-text-secondary);
-}
-
-.release-notes :deep(ul) {
-  list-style-type: disc;
-  padding-left: 1.25rem;
-  margin: 0.5rem 0;
-}
-
-.release-notes :deep(li) {
-  margin: 0.25rem 0;
-  line-height: 1.4;
-}
-
-.release-notes::-webkit-scrollbar {
-  width: 6px;
-}
-
-.release-notes::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.release-notes::-webkit-scrollbar-thumb {
-  background: #888;
-  border-radius: 3px;
-}
-
-.release-notes::-webkit-scrollbar-thumb:hover {
-  background: #555;
 }
 </style>

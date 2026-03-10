@@ -482,6 +482,11 @@ const parseFilePath = (fileEntry: string, repoPath?: string): string => {
   return filePath
 }
 
+const isCommitableRelativePath = (filePath: string): boolean => {
+  const normalized = filePath.trim().replace(/\\/g, '/')
+  return normalized !== '' && normalized !== '.' && normalized !== './'
+}
+
 const getEffectiveFileStatus = (fileEntry: string, repoPath?: string): string => {
   const rawStatus = fileEntry.substring(0, 1)
   if (rawStatus !== 'C' || !repoPath) return rawStatus
@@ -519,7 +524,7 @@ const getCommitFilePaths = (result: MergeSessionResult): string[] => {
       commitableStatuses.has(getEffectiveFileStatus(fileEntry, result.targetRepoPath))
     )
     .map((fileEntry) => parseFilePath(fileEntry, result.targetRepoPath))
-    .filter((filePath) => filePath !== '')
+    .filter((filePath) => isCommitableRelativePath(filePath))
 
   return Array.from(new Set(filePaths))
 }

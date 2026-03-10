@@ -200,36 +200,36 @@ const parseSvnMergeOutput = (output: string): Array<{ status: string; path: stri
   for (const line of lines) {
     if (!line || line.trim() === '') continue
 
-    // Skip summary lines (e.g., "--- Merging r123 into '.':")
-    if (line.startsWith('---') || line.startsWith('Summary')) continue
+    // Skip summary/info lines
+    if (line.startsWith('---') || line.startsWith('Summary') || line.startsWith('Merge')) {
+      continue
+    }
 
-    // Match lines like "U    path/to/file" or " U   path/to/file"
-    const match = line.match(/^([AUGCDR ][ UC])\s+(.+)$/)
+    // SVN merge output: "[STATUS][PROPSTATUS]  [FILEPATH]"
+    // Status columns are 2 characters wide, then spaces, then filename
+    // Example: "U    path/to/file.txt"
+    //          "_M   path/to/file.txt"
+    //          "C    conflict.txt"
+    
+    // Match status lines with optional leading spaces, e.g.:
+    // "   C path/to/file", "U    path/to/file", " G   path/to/file"
+    const match = line.match(/^\s*([ACDMRUG])(?:\s+[ACDMRUG])?\s+(.+)$/)
     if (!match) continue
 
-    const statusChars = match[1]
+    const primaryStatus = match[1]
     const filePath = match[2].trim()
 
-    // Get the first meaningful status character (content status)
-    const contentStatus = statusChars[0].trim()
-    const propStatus = statusChars[1]?.trim()
+    if (!filePath) continue
 
-    // Determine the primary status
-    let status = contentStatus
-    if (contentStatus === 'C' || propStatus === 'C') {
-      status = 'C' // Conflict takes priority
-    } else if (!status && propStatus) {
-      status = propStatus
+    // Ignore current-directory entries (.)
+    if (filePath === '.' || filePath === './' || filePath === '.\\') {
+      continue
     }
 
-    // Map U (Updated) and G (merGed) to M (Modified) to match svn status output
-    if (status === 'U' || status === 'G') {
-      status = 'M'
-    }
+    // Map U (Updated) and G (merGed) to M (Modified)
+    const finalStatus = (primaryStatus === 'U' || primaryStatus === 'G') ? 'M' : primaryStatus
 
-    if (status && filePath) {
-      files.push({ status, path: filePath })
-    }
+    files.push({ status: finalStatus, path: filePath })
   }
 
   return files
@@ -1088,7 +1088,10 @@ export const apiHandlers = {
     try {
       const commitPaths = (filePaths || [])
         .map((filePath) => filePath.trim())
-        .filter((filePath) => filePath !== '')
+        .filter(
+          (filePath) =>
+            filePath !== '' && filePath !== '.' && filePath !== './' && filePath !== '.\\'
+        )
 
       if (commitPaths.length === 0) {
         return {

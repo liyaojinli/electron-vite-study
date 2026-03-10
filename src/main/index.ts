@@ -201,6 +201,11 @@ app.whenReady().then(async () => {
     quitAndInstall()
   })
 
+  // 获取应用版本号
+  ipcMain.handle('app:getVersion', () => {
+    return app.getVersion()
+  })
+
   // 监听渲染进程的主题变化，设置原生窗口主题
   ipcMain.on('theme:set', (_event, isDark: boolean) => {
     // 设置 nativeTheme.themeSource 会影响所有窗口的原生外观（包括标题栏）

@@ -13,6 +13,11 @@ interface ThemeAPI {
   setTheme: (isDark: boolean) => void
 }
 
+// 应用 API 类型
+interface AppAPI {
+  getVersion: () => Promise<string>
+}
+
 // 更新 API 类型
 interface UpdaterAPI {
   checkForUpdates: () => Promise<void>
@@ -35,6 +40,7 @@ declare global {
     electron: ElectronAPI
     api: API
     theme: ThemeAPI
+    appApi: AppAPI
     updater: UpdaterAPI
   }
 }
