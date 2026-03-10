@@ -164,12 +164,12 @@ const getDiffTooltip = (file: FileItem): string => {
 const handleViewDiff = (file: FileItem, event: MouseEvent): void => {
   // Prevent checkbox toggle when clicking on file name
   event.stopPropagation()
-  
+
   // Check if can view diff
   if (!canViewDiff(file)) {
     return
   }
-  
+
   emit('viewDiff', file)
 }
 </script>

@@ -64,7 +64,7 @@ const saveRepository = async (index: number): Promise<void> => {
   try {
     const repo = repositories.value[index]
     const payload = repo.toJSON()
-    
+
     // 检查远程地址是否重复
     const normalizedUrl = payload.url.trim().replace(/\/+$/, '') // 去除尾部斜杠
     const duplicateIndex = repositories.value.findIndex((r, i) => {
@@ -72,12 +72,14 @@ const saveRepository = async (index: number): Promise<void> => {
       const existingUrl = r.url.trim().replace(/\/+$/, '')
       return existingUrl === normalizedUrl
     })
-    
+
     if (duplicateIndex !== -1) {
-      alert(`远程地址已存在于「${repositories.value[duplicateIndex].alias || '未命名'}」仓库中，不允许重复添加。`)
+      alert(
+        `远程地址已存在于「${repositories.value[duplicateIndex].alias || '未命名'}」仓库中，不允许重复添加。`
+      )
       return
     }
-    
+
     const verifyResult = await window.api.verifyRepository(payload)
     if (!verifyResult.ok) {
       alert(verifyResult.message || 'SVN 连接验证失败。')
@@ -88,18 +90,16 @@ const saveRepository = async (index: number): Promise<void> => {
       // 计算正确的插入位置：该行之前有多少条已保存的行
       const savedRowsBeforeIndex = repositories.value
         .slice(0, index)
-        .filter(r => !newRows.value.has(r))
-        .length
+        .filter((r) => !newRows.value.has(r)).length
       await window.api.insertRepository(savedRowsBeforeIndex, payload)
     } else {
       // 对于更新操作，也需要计算正确的索引：该行之前有多少条已保存的行
       const savedRowsBeforeIndex = repositories.value
         .slice(0, index)
-        .filter(r => !newRows.value.has(r))
-        .length
+        .filter((r) => !newRows.value.has(r)).length
       await window.api.updateRepository(savedRowsBeforeIndex, payload)
     }
-    
+
     // 不要刷新整个列表，只更新当前行的 baseline 数据
     // 这样可以保留其他行正在编辑的数据
     baselineData.value[index] = payload
@@ -125,8 +125,7 @@ const removeRepository = async (index: number): Promise<void> => {
       // 计算正确的删除位置：该行之前有多少条已保存的行
       const savedRowsBeforeIndex = repositories.value
         .slice(0, index)
-        .filter(r => !newRows.value.has(r))
-        .length
+        .filter((r) => !newRows.value.has(r)).length
       await window.api.deleteRepository(savedRowsBeforeIndex)
       // 不要刷新整个列表，只从当前列表中移除这一行
       repositories.value.splice(index, 1)
