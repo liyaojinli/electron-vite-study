@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, watch, onBeforeUnmount } from 'vue'
+import { computed, ref, watch, onBeforeUnmount } from 'vue'
 import * as monaco from 'monaco-editor'
-import { X } from 'lucide-vue-next'
+import { ChevronLeft, ChevronRight, X } from 'lucide-vue-next'
 
 interface Props {
   visible?: boolean
@@ -29,6 +29,7 @@ const showEditor = ref(false)
 let diffEditorInstance: monaco.editor.IStandaloneDiffEditor | null = null
 let originalModelInstance: monaco.editor.ITextModel | null = null
 let modifiedModelInstance: monaco.editor.ITextModel | null = null
+const hasDiffEditor = ref(false)
 
 // Get current theme
 const isDarkMode = (): boolean => {
@@ -72,6 +73,7 @@ const getLanguageFromPath = (path: string): string => {
 }
 
 const destroyEditor = (): void => {
+  hasDiffEditor.value = false
   if (originalModelInstance) {
     originalModelInstance.dispose()
     originalModelInstance = null
@@ -115,6 +117,7 @@ const initEditor = (
     original: originalModelInstance,
     modified: modifiedModelInstance
   })
+  hasDiffEditor.value = true
 }
 
 // Theme observer
@@ -198,11 +201,23 @@ const handleClose = (): void => {
   emit('close')
 }
 
+const canNavigate = computed(() => hasDiffEditor.value && showEditor.value && !isLoading.value)
+
+const handleNavigatePrevious = (): void => {
+  diffEditorInstance?.goToDiff('previous')
+}
+
+const handleNavigateNext = (): void => {
+  diffEditorInstance?.goToDiff('next')
+}
+
 watch(
-  () => props.visible,
-  (visible) => {
+  [() => props.visible, () => props.repoPath, () => props.filePath],
+  ([visible, repoPath, filePath], [prevVisible, prevRepoPath, prevFilePath]) => {
     if (visible) {
-      loadDiff()
+      if (!prevVisible || repoPath !== prevRepoPath || filePath !== prevFilePath) {
+        loadDiff()
+      }
     } else {
       cleanupThemeObserver()
       destroyEditor()
@@ -218,14 +233,14 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div v-if="visible" class="diff-viewer-overlay">
-    <div class="diff-viewer-container">
-      <div class="diff-header">
+  <div v-if="visible" class="diff-viewer-overlay app-dialog-backdrop">
+    <div class="diff-viewer-container app-dialog-shell">
+      <div class="diff-header app-dialog-header">
         <div class="diff-title">
           <span class="title-text">文件差异对比</span>
           <span class="file-path">{{ filePath }}</span>
         </div>
-        <button class="close-btn" @click="handleClose">
+        <button class="close-btn app-dialog-close" @click="handleClose">
           <X :size="20" />
         </button>
       </div>
@@ -235,6 +250,24 @@ onBeforeUnmount(() => {
           <span class="label">服务端版本 (HEAD)</span>
           <span class="separator">vs</span>
           <span class="label">本地版本 (Working Copy)</span>
+        </div>
+        <div class="toolbar-right">
+          <button
+            class="nav-btn app-action-secondary"
+            :disabled="!canNavigate"
+            @click="handleNavigatePrevious"
+          >
+            <ChevronLeft :size="14" />
+            <span>上一个</span>
+          </button>
+          <button
+            class="nav-btn app-action-secondary"
+            :disabled="!canNavigate"
+            @click="handleNavigateNext"
+          >
+            <span>下一个</span>
+            <ChevronRight :size="14" />
+          </button>
         </div>
       </div>
 
@@ -256,35 +289,18 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .diff-viewer-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
-  display: flex;
-  align-items: center;
-  justify-content: center;
   z-index: 10000;
 }
 
 .diff-viewer-container {
-  background: var(--color-background-primary);
   border-radius: 8px;
-  border: 1px solid var(--color-border);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
   width: 95%;
   height: 90%;
-  display: flex;
-  flex-direction: column;
 }
 
 .diff-header {
   padding: 16px;
-  border-bottom: 1px solid var(--color-border);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
 }
 
 .diff-title {
@@ -306,21 +322,12 @@ onBeforeUnmount(() => {
 }
 
 .close-btn {
-  background: none;
-  border: none;
-  cursor: pointer;
-  color: var(--color-text-secondary);
   padding: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   border-radius: 4px;
-  transition: all 120ms ease;
 }
 
 .close-btn:hover {
   background: var(--color-background-hover);
-  color: var(--color-text-primary);
 }
 
 .diff-toolbar {
@@ -352,6 +359,14 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.nav-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
 }
 
 .btn {

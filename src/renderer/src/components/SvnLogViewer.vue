@@ -1,9 +1,9 @@
 <template>
-  <div v-if="visible" class="log-viewer-backdrop">
-    <div class="log-viewer">
-      <div class="log-viewer-header">
+  <div v-if="visible" class="log-viewer-backdrop app-dialog-backdrop">
+    <div class="log-viewer app-dialog-shell">
+      <div class="log-viewer-header app-dialog-header">
         <div class="log-title">SVN 提交日志</div>
-        <button class="close-btn" @click="$emit('close')">✕</button>
+        <button class="close-btn app-dialog-close" @click="$emit('close')">✕</button>
       </div>
 
       <div class="log-viewer-body">
@@ -28,8 +28,8 @@
         </div>
       </div>
 
-      <div class="log-viewer-footer">
-        <button class="close-action" @click="$emit('close')">关闭</button>
+      <div class="log-viewer-footer app-dialog-footer">
+        <button class="app-action-secondary" @click="$emit('close')">关闭</button>
       </div>
     </div>
   </div>
@@ -57,33 +57,18 @@ defineEmits<{
 
 <style scoped>
 .log-viewer-backdrop {
-  position: fixed;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.4);
   z-index: 3000;
 }
 
 .log-viewer {
   width: 70vw;
   max-height: 80vh;
-  display: flex;
-  flex-direction: column;
-  background: var(--color-background-primary);
-  border: 1px solid var(--color-border);
   border-radius: 8px;
-  overflow: hidden;
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
 }
 
 .log-viewer-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   padding: 14px 18px;
-  border-bottom: 1px solid var(--color-border);
   flex-shrink: 0;
   background: var(--color-background-secondary);
 }
@@ -95,18 +80,10 @@ defineEmits<{
 }
 
 .close-btn {
-  background: transparent;
-  border: none;
   font-size: 18px;
-  cursor: pointer;
-  color: var(--color-text-secondary);
   width: 28px;
   height: 28px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   border-radius: 4px;
-  transition: background 0.15s;
 }
 
 .close-btn:hover {
@@ -206,27 +183,6 @@ defineEmits<{
 }
 
 .log-viewer-footer {
-  display: flex;
-  justify-content: flex-end;
-  padding: 12px 16px;
-  border-top: 1px solid var(--color-border);
   flex-shrink: 0;
-  background: var(--color-background-secondary);
-}
-
-.close-action {
-  padding: 8px 20px;
-  border-radius: 6px;
-  border: 1px solid var(--color-border);
-  background: var(--color-background-primary);
-  cursor: pointer;
-  font-weight: 500;
-  transition: all 0.2s;
-  color: var(--color-text-primary);
-}
-
-.close-action:hover {
-  background: var(--color-background-hover);
-  border-color: var(--color-text-secondary);
 }
 </style>

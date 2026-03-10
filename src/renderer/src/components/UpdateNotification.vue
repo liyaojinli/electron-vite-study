@@ -69,15 +69,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { Download, CheckCircle, AlertCircle, Info, X as XIcon } from 'lucide-vue-next'
-
-interface UpdateInfo {
-  status: string
-  version?: string
-  progress?: number
-  error?: string
-  releaseNotes?: string
-  releaseDate?: string
-}
+import type { UpdateInfo } from '../../../shared/update'
 
 const updateInfo = ref<UpdateInfo>({
   status: 'idle'

@@ -175,11 +175,11 @@ const handleViewDiff = (file: FileItem, event: MouseEvent): void => {
 </script>
 
 <template>
-  <div v-if="visible" class="revert-dialog-overlay">
-    <div class="revert-dialog-container">
-      <div class="dialog-header">
+  <div v-if="visible" class="revert-dialog-overlay app-dialog-backdrop">
+    <div class="revert-dialog-container app-dialog-shell">
+      <div class="dialog-header app-dialog-header">
         <h3 class="dialog-title">确认恢复仓库</h3>
-        <button class="dialog-close-btn" @click="handleCancel">
+        <button class="dialog-close-btn app-dialog-close" @click="handleCancel">
           <X :size="18" />
         </button>
       </div>
@@ -259,10 +259,12 @@ const handleViewDiff = (file: FileItem, event: MouseEvent): void => {
         <div v-else class="no-files-box">仓库中没有检测到任何修改。</div>
       </div>
 
-      <div class="dialog-footer">
-        <button class="btn-cancel" type="button" @click="handleCancel">取消</button>
+      <div class="dialog-footer app-dialog-footer">
+        <button class="btn-cancel app-action-secondary" type="button" @click="handleCancel">
+          取消
+        </button>
         <button
-          class="btn-confirm"
+          class="btn-confirm app-action-primary"
           type="button"
           :disabled="selectedCount === 0"
           @click="handleConfirm"
@@ -276,36 +278,19 @@ const handleViewDiff = (file: FileItem, event: MouseEvent): void => {
 
 <style scoped lang="css">
 .revert-dialog-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.45);
-  display: flex;
-  align-items: center;
-  justify-content: center;
   z-index: 9999;
 }
 
 .revert-dialog-container {
-  background: var(--color-background-primary);
   border-radius: 8px;
-  border: 1px solid var(--color-border);
   box-shadow: 0 3px 12px rgba(0, 0, 0, 0.15);
   width: 90%;
   max-width: 600px;
   max-height: 80vh;
-  display: flex;
-  flex-direction: column;
 }
 
 .dialog-header {
   padding: 16px;
-  border-bottom: 1px solid var(--color-border);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
 }
 
 .dialog-title {
@@ -316,21 +301,12 @@ const handleViewDiff = (file: FileItem, event: MouseEvent): void => {
 }
 
 .dialog-close-btn {
-  background: none;
-  border: none;
-  cursor: pointer;
-  color: var(--color-text-secondary);
   padding: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   border-radius: 4px;
-  transition: all 120ms ease;
 }
 
 .dialog-close-btn:hover {
   background: var(--color-background-hover);
-  color: var(--color-text-primary);
 }
 
 .dialog-content {
@@ -553,7 +529,6 @@ const handleViewDiff = (file: FileItem, event: MouseEvent): void => {
 
 .dialog-footer {
   padding: 16px;
-  border-top: 1px solid var(--color-border);
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -563,16 +538,11 @@ const handleViewDiff = (file: FileItem, event: MouseEvent): void => {
 .btn-cancel,
 .btn-confirm {
   padding: 8px 16px;
-  border-radius: 4px;
-  border: 1px solid var(--color-border);
   font-size: 13px;
-  cursor: pointer;
-  transition: all 120ms ease;
 }
 
 .btn-cancel {
-  background: var(--color-background-primary);
-  color: var(--color-text-primary);
+  border-radius: 4px;
 }
 
 .btn-cancel:hover {
@@ -583,6 +553,7 @@ const handleViewDiff = (file: FileItem, event: MouseEvent): void => {
   background: var(--color-error);
   color: white;
   border-color: var(--color-error);
+  border-radius: 4px;
 }
 
 .btn-confirm:hover:not(:disabled) {

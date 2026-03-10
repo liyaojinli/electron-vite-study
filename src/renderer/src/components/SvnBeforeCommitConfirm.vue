@@ -1,9 +1,9 @@
 <template>
-  <div v-if="visible" class="confirm-dialog-backdrop">
-    <div class="confirm-dialog">
-      <div class="confirm-dialog-header">
+  <div v-if="visible" class="confirm-dialog-backdrop app-dialog-backdrop">
+    <div class="confirm-dialog app-dialog-shell">
+      <div class="confirm-dialog-header app-dialog-header">
         <div class="confirm-title">提交前确认</div>
-        <button class="close-btn" @click="$emit('cancel')">✕</button>
+        <button class="close-btn app-dialog-close" @click="$emit('cancel')">✕</button>
       </div>
 
       <div class="confirm-dialog-body">
@@ -40,19 +40,19 @@
         </div>
       </div>
 
-      <div class="confirm-dialog-footer">
+      <div class="confirm-dialog-footer app-dialog-footer">
         <div class="footer-info">
           已确认: {{ confirmedRepos.size }} / {{ repositoriesToCommit.length }}
         </div>
         <div class="footer-actions">
           <button
-            class="confirm-btn"
+            class="confirm-btn app-action-primary"
             :disabled="confirmedRepos.size === 0"
             @click="handleConfirmCommit"
           >
             提交 ({{ confirmedRepos.size }})
           </button>
-          <button class="cancel-btn" @click="$emit('cancel')">取消</button>
+          <button class="cancel-btn app-action-secondary" @click="$emit('cancel')">取消</button>
         </div>
       </div>
     </div>
@@ -70,17 +70,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import SvnDiffViewer from './SvnDiffViewer.vue'
-
-interface FileWithStatus {
-  path: string
-  status: string
-}
-
-interface RepositoryToCommit {
-  targetRepoName: string
-  targetRepoPath: string
-  files: FileWithStatus[]
-}
+import type { RepositoryToCommit } from '../../../shared/merge'
 
 interface Props {
   visible: boolean
@@ -113,7 +103,7 @@ const isFileViewed = (repoPath: string, filePath: string): boolean => {
 const canConfirmRepo = (repoPath: string): boolean => {
   const repo = repositoriesToCommit.value.find((r) => r.targetRepoPath === repoPath)
   if (!repo) return false
-  
+
   // 检查该仓库的所有文件是否都被查看过
   return repo.files.every((file) => isFileViewed(repoPath, file.path))
 }
@@ -122,7 +112,7 @@ const toggleRepoConfirm = (repoPath: string): void => {
   if (!canConfirmRepo(repoPath)) {
     return // 不允许确认未查看完的仓库
   }
-  
+
   if (confirmedRepos.value.has(repoPath)) {
     confirmedRepos.value.delete(repoPath)
   } else {
@@ -141,13 +131,13 @@ const handleDiffViewerClose = (): void => {
   if (diffViewerRepoPath.value && diffViewerFilePath.value) {
     const key = getFileKey(diffViewerRepoPath.value, diffViewerFilePath.value)
     viewedFiles.value.add(key)
-    
+
     // 如果该仓库所有文件都已查看，自动勾选
     if (canConfirmRepo(diffViewerRepoPath.value)) {
       confirmedRepos.value.add(diffViewerRepoPath.value)
     }
   }
-  
+
   diffViewerVisible.value = false
 }
 
@@ -159,32 +149,17 @@ const handleConfirmCommit = (): void => {
 
 <style scoped>
 .confirm-dialog-backdrop {
-  position: fixed;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.35);
   z-index: 2500;
 }
 
 .confirm-dialog {
   width: 50vw;
   max-height: 70vh;
-  display: flex;
-  flex-direction: column;
-  background: var(--color-background-primary);
-  border: 1px solid var(--color-border);
   border-radius: 8px;
-  overflow: hidden;
 }
 
 .confirm-dialog-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   padding: 12px 16px;
-  border-bottom: 1px solid var(--color-border);
   flex-shrink: 0;
 }
 
@@ -194,10 +169,7 @@ const handleConfirmCommit = (): void => {
 }
 
 .close-btn {
-  background: transparent;
-  border: none;
   font-size: 14px;
-  cursor: pointer;
 }
 
 .confirm-dialog-body {
@@ -334,11 +306,9 @@ const handleConfirmCommit = (): void => {
 }
 
 .confirm-dialog-footer {
-  display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 10px 16px;
-  border-top: 1px solid var(--color-border);
   flex-shrink: 0;
 }
 
@@ -354,18 +324,7 @@ const handleConfirmCommit = (): void => {
 
 .confirm-btn {
   padding: 6px 16px;
-  border-radius: 6px;
-  border: 1px solid var(--color-primary);
-  background: var(--color-primary);
-  color: white;
-  cursor: pointer;
   font-weight: 500;
-  transition: all 0.2s;
-}
-
-.confirm-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 
 .confirm-btn:hover:not(:disabled) {
@@ -374,11 +333,6 @@ const handleConfirmCommit = (): void => {
 
 .cancel-btn {
   padding: 6px 12px;
-  border-radius: 6px;
-  border: 1px solid var(--color-border);
-  background: var(--color-background-primary);
-  cursor: pointer;
-  transition: all 0.2s;
 }
 
 .cancel-btn:hover {

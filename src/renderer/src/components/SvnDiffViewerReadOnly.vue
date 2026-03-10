@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, watch, onBeforeUnmount } from 'vue'
+import { computed, ref, watch, onBeforeUnmount } from 'vue'
 import * as monaco from 'monaco-editor'
-import { X } from 'lucide-vue-next'
+import { ChevronLeft, ChevronRight, X } from 'lucide-vue-next'
 
 interface Props {
   visible?: boolean
@@ -33,6 +33,7 @@ const showEditor = ref(false)
 let diffEditorInstance: monaco.editor.IStandaloneDiffEditor | null = null
 let originalModelInstance: monaco.editor.ITextModel | null = null
 let modifiedModelInstance: monaco.editor.ITextModel | null = null
+const hasDiffEditor = ref(false)
 
 // Get current theme
 const isDarkMode = (): boolean => {
@@ -76,6 +77,7 @@ const getLanguageFromPath = (path: string): string => {
 }
 
 const destroyEditor = (): void => {
+  hasDiffEditor.value = false
   if (originalModelInstance) {
     originalModelInstance.dispose()
     originalModelInstance = null
@@ -119,6 +121,7 @@ const initEditor = (
     original: originalModelInstance,
     modified: modifiedModelInstance
   })
+  hasDiffEditor.value = true
 }
 
 // Theme observer
@@ -205,11 +208,36 @@ const handleClose = (): void => {
   emit('close')
 }
 
+const canNavigate = computed(() => hasDiffEditor.value && showEditor.value && !isLoading.value)
+
+const handleNavigatePrevious = (): void => {
+  diffEditorInstance?.goToDiff('previous')
+}
+
+const handleNavigateNext = (): void => {
+  diffEditorInstance?.goToDiff('next')
+}
+
 watch(
-  () => props.visible,
-  (visible) => {
+  [
+    () => props.visible,
+    () => props.repoPath,
+    () => props.filePath,
+    () => props.baseRevision,
+    () => props.targetRevision
+  ],
+  ([visible, repoPath, filePath, baseRevision, targetRevision], previous) => {
+    const [prevVisible, prevRepoPath, prevFilePath, prevBaseRevision, prevTargetRevision] = previous
     if (visible) {
-      loadDiff()
+      if (
+        !prevVisible ||
+        repoPath !== prevRepoPath ||
+        filePath !== prevFilePath ||
+        baseRevision !== prevBaseRevision ||
+        targetRevision !== prevTargetRevision
+      ) {
+        loadDiff()
+      }
     } else {
       cleanupThemeObserver()
       destroyEditor()
@@ -225,14 +253,14 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div v-if="visible" class="diff-viewer-overlay">
-    <div class="diff-viewer-container">
-      <div class="diff-header">
+  <div v-if="visible" class="diff-viewer-overlay app-dialog-backdrop">
+    <div class="diff-viewer-container app-dialog-shell">
+      <div class="diff-header app-dialog-header">
         <div class="diff-title">
           <span class="title-text">版本差异查看</span>
           <span class="file-path" :title="filePath">{{ filePath }}</span>
         </div>
-        <button class="close-btn" @click="handleClose">
+        <button class="close-btn app-dialog-close" @click="handleClose">
           <X :size="20" />
         </button>
       </div>
@@ -242,6 +270,24 @@ onBeforeUnmount(() => {
           <span class="label">提交前 (r{{ baseRevision }})</span>
           <span class="separator">vs</span>
           <span class="label">提交后 (r{{ targetRevision }})</span>
+        </div>
+        <div class="toolbar-right">
+          <button
+            class="nav-btn app-action-secondary"
+            :disabled="!canNavigate"
+            @click="handleNavigatePrevious"
+          >
+            <ChevronLeft :size="14" />
+            <span>上一个</span>
+          </button>
+          <button
+            class="nav-btn app-action-secondary"
+            :disabled="!canNavigate"
+            @click="handleNavigateNext"
+          >
+            <span>下一个</span>
+            <ChevronRight :size="14" />
+          </button>
         </div>
       </div>
 
@@ -263,33 +309,17 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .diff-viewer-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
-  display: flex;
-  align-items: center;
-  justify-content: center;
   z-index: 3500;
 }
 
 .diff-viewer-container {
   width: 95vw;
   height: 90vh;
-  background: var(--bg-primary, #ffffff);
   border-radius: 8px;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
 }
 
 .diff-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   padding: 12px 16px;
   border-bottom: 1px solid var(--border-color, #e0e0e0);
   background: var(--bg-secondary, #f5f5f5);
@@ -315,22 +345,13 @@ onBeforeUnmount(() => {
 }
 
 .close-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
   width: 32px;
   height: 32px;
-  border: none;
-  background: transparent;
   border-radius: 4px;
-  cursor: pointer;
-  color: var(--text-secondary, #666);
-  transition: all 0.2s;
 }
 
 .close-btn:hover {
   background: var(--bg-hover, rgba(0, 0, 0, 0.1));
-  color: var(--text-primary, #333);
 }
 
 .diff-toolbar {
@@ -361,6 +382,20 @@ onBeforeUnmount(() => {
 .toolbar-left .separator {
   color: var(--text-tertiary, #999);
   font-weight: bold;
+}
+
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.nav-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
 }
 
 .editor-wrapper {

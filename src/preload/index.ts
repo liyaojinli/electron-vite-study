@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 import { apiKeys, type ApiHandlers } from '../main/api'
+import type { UpdateInfo } from '../shared/update'
 
 // 辅助函数：根据 API 名称列表自动生成绑定
 function createApiBindings<T extends readonly string[]>(
@@ -50,27 +51,9 @@ const updater = {
     ipcRenderer.invoke('update:install')
   },
   // 监听更新状态
-  onUpdateStatus: (
-    callback: (info: {
-      status: string
-      version?: string
-      progress?: number
-      error?: string
-      releaseNotes?: string
-      releaseDate?: string
-    }) => void
-  ): (() => void) => {
+  onUpdateStatus: (callback: (info: UpdateInfo) => void): (() => void) => {
     const listener = (_event: Electron.IpcRendererEvent, info: unknown): void => {
-      callback(
-        info as {
-          status: string
-          version?: string
-          progress?: number
-          error?: string
-          releaseNotes?: string
-          releaseDate?: string
-        }
-      )
+      callback(info as UpdateInfo)
     }
     ipcRenderer.on('update:status', listener)
     // 返回取消监听的函数

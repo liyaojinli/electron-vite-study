@@ -39,11 +39,16 @@ watch(
 </script>
 
 <template>
-  <div v-if="visible" class="svn-log-overlay" @click="$emit('close')">
-    <div class="svn-log-dialog" @click.stop>
-      <div class="dialog-header">
+  <div v-if="visible" class="svn-log-overlay app-dialog-backdrop" @click="$emit('close')">
+    <div class="svn-log-dialog app-dialog-shell" @click.stop>
+      <div class="dialog-header app-dialog-header">
         <h2>{{ title }}</h2>
-        <button type="button" class="close-btn" :disabled="isLoading" @click="$emit('close')">
+        <button
+          type="button"
+          class="close-btn app-dialog-close"
+          :disabled="isLoading"
+          @click="$emit('close')"
+        >
           <X :size="20" />
         </button>
       </div>
@@ -76,10 +81,10 @@ watch(
         </div>
       </div>
 
-      <div class="dialog-footer">
+      <div class="dialog-footer app-dialog-footer">
         <button
           type="button"
-          class="app-button is-primary"
+          class="app-button is-primary app-action-primary"
           :disabled="isLoading"
           @click="$emit('close')"
         >
@@ -92,26 +97,13 @@ watch(
 
 <style scoped>
 .svn-log-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
-  display: flex;
-  align-items: center;
-  justify-content: center;
   z-index: 1000;
   padding: 20px;
 }
 
 .svn-log-dialog {
-  background: var(--color-background-primary);
-  border: 1px solid var(--color-border);
   border-radius: 12px;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-  display: flex;
-  flex-direction: column;
   width: 100%;
   max-width: 700px;
   height: 500px;
@@ -119,11 +111,7 @@ watch(
 }
 
 .dialog-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   padding: 16px;
-  border-bottom: 1px solid var(--color-border);
   background: var(--color-background-secondary);
   border-radius: 12px 12px 0 0;
 }
@@ -136,26 +124,12 @@ watch(
 }
 
 .close-btn {
-  background: transparent;
-  border: none;
-  color: var(--color-text-secondary);
-  cursor: pointer;
   padding: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 120ms ease;
 }
 
 .close-btn:hover:not(:disabled) {
-  color: var(--color-text-primary);
   background: rgba(10, 132, 255, 0.1);
   border-radius: 4px;
-}
-
-.close-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 
 .dialog-content {
@@ -250,10 +224,6 @@ watch(
 
 .dialog-footer {
   padding: 16px;
-  border-top: 1px solid var(--color-border);
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
   background: var(--color-background-secondary);
   border-radius: 0 0 12px 12px;
 }
@@ -261,10 +231,6 @@ watch(
 .dialog-footer .app-button {
   padding: 8px 16px;
   font-size: 12px;
-  border-radius: 6px;
-  border: 1px solid var(--color-border);
-  background: var(--color-background-primary);
-  color: var(--color-text-primary);
 }
 
 .dialog-footer .app-button:hover:not(:disabled) {
@@ -273,7 +239,6 @@ watch(
 
 .dialog-footer .app-button.is-primary {
   background: var(--el-color-primary);
-  color: #ffffff;
   border-color: var(--el-color-primary);
 }
 

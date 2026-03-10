@@ -1,24 +1,8 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { ref, toRef } from 'vue'
 import { File, Folder, Search, X, XCircle } from 'lucide-vue-next'
-import { arraysEqual } from '../utils/util'
-
-interface SvnLogEntry {
-  revision: number
-  author: string
-  date: string
-  message: string
-}
-
-interface AffectedFileGroup {
-  revision: number
-  files: Array<{ status: string; path: string }>
-}
-
-interface AffectedFilePathGroup {
-  path: string
-  files: Array<{ status: string; path: string }>
-}
+import { useSvnRemoteLogViewer } from '@renderer/composables/useSvnRemoteLogViewer'
+import type { SvnChangedFile } from '@renderer/types/svn'
 
 interface Props {
   visible: boolean
@@ -41,223 +25,69 @@ const props = withDefaults(defineProps<Props>(), {
 const emit = defineEmits<{
   close: []
   'update:selectedRevisions': [revisions: number[]]
-  'view-file-diff': [payload: { file: { status: string; path: string }; revision: number }]
+  'view-file-diff': [payload: { file: SvnChangedFile; revision: number }]
 }>()
 
 const tableRef = ref()
-const logs = ref<SvnLogEntry[]>([])
-const affectedFiles = ref<AffectedFileGroup[]>([])
-const selectedRevisions = ref<number[]>([...props.selectedRevisions])
-const isLogLoading = ref(false)
-const isFilesLoading = ref(false)
-const searchKeyword = ref('')
-const startDate = ref('')
-const endDate = ref('')
-
-const hasRepoUrl = computed(() => Boolean(props.repoUrl))
-
-const formatDate = (dateString: string): string => {
-  try {
-    const date = new Date(dateString)
-    return date.toLocaleString('zh-CN', {
-      timeZone: 'Asia/Shanghai',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false
-    })
-  } catch {
-    return dateString
-  }
-}
-
-const resetSelections = (): void => {
-  selectedRevisions.value = []
-  affectedFiles.value = []
-  if (tableRef.value) {
-    tableRef.value.clearSelection()
-    tableRef.value.setCurrentRow?.(undefined)
-  }
-}
-
-const loadLogs = async (): Promise<void> => {
-  if (!props.repoUrl) return
-
-  isLogLoading.value = true
-  try {
-    logs.value = await window.api.getSvnLog(
-      props.repoUrl,
-      props.limit,
-      searchKeyword.value,
-      startDate.value,
-      endDate.value
-    )
-    resetSelections()
-  } catch (error) {
-    console.error('Failed to load remote SVN logs:', error)
-    logs.value = []
-    resetSelections()
-  } finally {
-    isLogLoading.value = false
-  }
-}
-
-const loadAffectedFiles = async (): Promise<void> => {
-  console.log('[SvnRemoteLogViewer] loadAffectedFiles called with:', {
-    repoUrl: props.repoUrl,
-    selectedRevisions: selectedRevisions.value
-  })
-  if (!props.repoUrl || selectedRevisions.value.length === 0) {
-    console.log('[SvnRemoteLogViewer] Early return: empty repo or revisions')
-    affectedFiles.value = []
-    return
-  }
-
-  isFilesLoading.value = true
-  try {
-    // Convert to plain array to avoid IPC serialization issues with Vue reactive proxies
-    const plainRevisions = [...selectedRevisions.value]
-    affectedFiles.value = await window.api.getSvnChangedFiles(props.repoUrl, plainRevisions)
-    console.log('[SvnRemoteLogViewer] getSvnChangedFiles returned:', affectedFiles.value)
-  } catch (error) {
-    console.error('Failed to load affected files:', error)
-    affectedFiles.value = []
-  } finally {
-    isFilesLoading.value = false
-  }
-}
-
-const handleSelectionChange = (selection: SvnLogEntry[]): void => {
-  const revisions = selection.map((item) => item.revision)
-  console.log('[SvnRemoteLogViewer] handleSelectionChange called:', revisions)
-  selectedRevisions.value = revisions
-}
-
-const handleRowClick = (row: SvnLogEntry): void => {
-  tableRef.value?.toggleRowSelection?.(row)
-}
-
-const canShowAffectedFileDiff = (file: { status: string; path: string }): boolean => {
-  return isFilePath(file.path)
-}
-
-const isFilePath = (path: string): boolean => {
-  if (path.endsWith('/') || path.endsWith('\\')) return false
-  const separator = path.includes('\\') ? '\\' : '/'
-  const fileName = path.split(separator).pop() || ''
-  return /\.[^./\\]+$/.test(fileName)
-}
-
-const getParentPath = (path: string): string => {
-  const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '')
-  if (!normalized) return '/'
-  const lastSlashIndex = normalized.lastIndexOf('/')
-  if (lastSlashIndex <= 0) return '/'
-  return normalized.slice(0, lastSlashIndex)
-}
-
-const getTopThreeLevelPath = (path: string): string => {
-  const parentPath = getParentPath(path)
-  const normalized = parentPath.replace(/\\/g, '/').replace(/\/+$/, '')
-  const hasLeadingSlash = normalized.startsWith('/')
-  const parts = normalized.split('/').filter(Boolean)
-  if (parts.length === 0) return '/'
-  const topParts = parts.slice(0, 3)
-  const groupedPath = topParts.join('/')
-  return hasLeadingSlash ? `/${groupedPath}` : groupedPath
-}
-
-const groupAffectedFilesByPath = (
-  files: Array<{ status: string; path: string }>
-): AffectedFilePathGroup[] => {
-  const grouped = new Map<string, Array<{ status: string; path: string }>>()
-
-  for (const file of files) {
-    const groupPath = getTopThreeLevelPath(file.path)
-    if (!grouped.has(groupPath)) {
-      grouped.set(groupPath, [])
+const {
+  logs,
+  affectedFiles,
+  selectedRevisions,
+  isLogLoading,
+  isFilesLoading,
+  searchKeyword,
+  startDate,
+  endDate,
+  hasRepoUrl,
+  formatDate,
+  loadLogs,
+  handleSelectionChange,
+  handleRowClick,
+  canShowAffectedFileDiff,
+  isFilePath,
+  groupAffectedFilesByPath,
+  getRelativePathForDisplay,
+  clearSelections
+} = useSvnRemoteLogViewer(
+  {
+    repoUrl: toRef(props, 'repoUrl'),
+    limit: toRef(props, 'limit'),
+    visible: toRef(props, 'visible'),
+    selectedRevisionsProp: toRef(props, 'selectedRevisions'),
+    onSelectedRevisionsChange: (revisions) => {
+      emit('update:selectedRevisions', revisions)
     }
-    grouped.get(groupPath)?.push(file)
-  }
+  },
+  tableRef
+)
 
-  for (const groupFiles of grouped.values()) {
-    groupFiles.sort((a, b) => a.path.localeCompare(b.path, 'zh-CN'))
-  }
-
-  return [...grouped.entries()]
-    .sort((a, b) => a[0].localeCompare(b[0], 'zh-CN'))
-    .map(([path, pathFiles]) => ({ path, files: pathFiles }))
-}
-
-const getRelativePathForDisplay = (fullPath: string, groupPath: string): string => {
-  const normalizedFullPath = fullPath.replace(/\\/g, '/')
-  const normalizedGroupPath = groupPath.replace(/\\/g, '/').replace(/\/+$/, '')
-
-  if (!normalizedGroupPath || normalizedGroupPath === '/') {
-    return normalizedFullPath.replace(/^\/+/, '')
-  }
-
-  const prefix = `${normalizedGroupPath}/`
-  if (normalizedFullPath.startsWith(prefix)) {
-    return normalizedFullPath.slice(prefix.length)
-  }
-
-  return normalizedFullPath
-}
-
-const handleFileLineClick = (file: { status: string; path: string }, revision: number): void => {
+const handleFileLineClick = (file: SvnChangedFile, revision: number): void => {
   if (!props.allowFileDiff || !canShowAffectedFileDiff(file)) return
   emit('view-file-diff', { file, revision })
 }
-
-const clearSelections = (): void => {
-  resetSelections()
-}
-
-watch(selectedRevisions, async () => {
-  console.log('[SvnRemoteLogViewer] selectedRevisions watch triggered:', selectedRevisions.value)
-  emit('update:selectedRevisions', [...selectedRevisions.value])
-  await loadAffectedFiles()
-})
-
-watch(
-  () => props.selectedRevisions,
-  (value) => {
-    const incoming = value || []
-    if (!arraysEqual(incoming, selectedRevisions.value)) {
-      selectedRevisions.value = [...incoming]
-    }
-  }
-)
-
-watch(
-  () => [props.visible, props.repoUrl],
-  async ([visible, repoUrl]) => {
-    // 组件初始化或 repoUrl 变化时重新加载日志
-    if (visible && repoUrl) {
-      await loadLogs()
-    }
-  },
-  { immediate: true }
-)
 </script>
 
 <template>
   <div
     v-if="visible"
-    :class="props.embedded ? 'remote-log-embedded' : 'remote-log-backdrop'"
+    :class="props.embedded ? 'remote-log-embedded' : 'remote-log-backdrop app-dialog-backdrop'"
     @click.self="!props.embedded && emit('close')"
   >
-    <div class="remote-log-dialog" :class="{ 'is-embedded': props.embedded }">
-      <div v-if="!props.embedded" class="remote-log-header">
+    <div
+      class="remote-log-dialog"
+      :class="{ 'is-embedded': props.embedded, 'app-dialog-shell': !props.embedded }"
+    >
+      <div v-if="!props.embedded" class="remote-log-header app-dialog-header">
         <div class="header-main">
           <div class="dialog-title">{{ title }}</div>
           <div class="dialog-subtitle">{{ repoUrl || '未提供远程仓库地址' }}</div>
         </div>
-        <button type="button" class="dialog-close" aria-label="关闭" @click="emit('close')">
+        <button
+          type="button"
+          class="dialog-close app-dialog-close"
+          aria-label="关闭"
+          @click="emit('close')"
+        >
           <X :size="18" :stroke-width="2" />
         </button>
       </div>
@@ -398,14 +228,8 @@ watch(
 
 <style scoped>
 .remote-log-backdrop {
-  position: fixed;
-  inset: 0;
   z-index: 3200;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   padding: 24px;
-  background: rgba(0, 0, 0, 0.35);
 }
 
 .remote-log-embedded {
@@ -415,13 +239,8 @@ watch(
 .remote-log-dialog {
   width: min(1200px, 96vw);
   height: min(760px, 92vh);
-  display: flex;
-  flex-direction: column;
   border-radius: 10px;
-  border: 1px solid var(--color-border);
-  background: var(--color-background-primary);
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.28);
-  overflow: hidden;
 }
 
 .remote-log-dialog.is-embedded {
@@ -434,12 +253,7 @@ watch(
 
 .remote-log-header {
   flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   gap: 12px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--color-border);
   background: var(--color-background-secondary);
 }
 
@@ -465,18 +279,10 @@ watch(
   width: 30px;
   height: 30px;
   border-radius: 6px;
-  border: 1px solid var(--color-border);
-  background: var(--color-background-primary);
-  color: var(--color-text-secondary);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: all 120ms ease;
 }
 
 .dialog-close:hover {
-  border-color: var(--el-color-primary);
+  background: var(--color-background-hover);
   color: var(--el-color-primary);
 }
 

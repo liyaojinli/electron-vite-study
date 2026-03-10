@@ -523,14 +523,14 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div v-if="visible" class="conflict-overlay">
-    <div class="conflict-container">
-      <div class="conflict-header">
+  <div v-if="visible" class="conflict-overlay app-dialog-backdrop">
+    <div class="conflict-container app-dialog-shell">
+      <div class="conflict-header app-dialog-header">
         <div class="conflict-title">
           <span class="title-text">冲突合并</span>
           <span class="file-path" :title="filePath">{{ filePath }}</span>
         </div>
-        <button class="close-btn" @click="handleClose">
+        <button class="close-btn app-dialog-close" @click="handleClose">
           <X :size="20" />
         </button>
       </div>
@@ -623,35 +623,18 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .conflict-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
-  display: flex;
-  align-items: center;
-  justify-content: center;
   z-index: 10000;
 }
 
 .conflict-container {
-  background: var(--color-background-primary);
   border-radius: 8px;
-  border: 1px solid var(--color-border);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
   width: 96%;
   height: 92%;
-  display: flex;
-  flex-direction: column;
 }
 
 .conflict-header {
   padding: 16px;
-  border-bottom: 1px solid var(--color-border);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
 }
 
 .conflict-title {
@@ -673,21 +656,12 @@ onBeforeUnmount(() => {
 }
 
 .close-btn {
-  background: none;
-  border: none;
-  cursor: pointer;
-  color: var(--color-text-secondary);
   padding: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   border-radius: 4px;
-  transition: all 120ms ease;
 }
 
 .close-btn:hover {
   background: var(--color-background-hover);
-  color: var(--color-text-primary);
 }
 
 .toolbar {

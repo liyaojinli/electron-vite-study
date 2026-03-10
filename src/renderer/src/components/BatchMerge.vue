@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { onMounted, ref, computed, watch } from 'vue'
+import { ref, watch, toRef } from 'vue'
 import {
   GitMerge,
+  RotateCcw,
   FolderOpen,
   ScrollText,
   LucideCircleCheckBig,
@@ -9,6 +10,9 @@ import {
   LucideTriangleAlert
 } from 'lucide-vue-next'
 import type { RepositoryData } from '../../../shared/repository'
+import type { MergeSessionResult } from '../../../shared/merge'
+import { useBatchMergeRepositories } from '../composables/useBatchMergeRepositories'
+import { useBatchMergeExecution } from '../composables/useBatchMergeExecution'
 import SvnLogDialog from './SvnLogDialog.vue'
 import SvnDiffViewerReadOnly from './SvnDiffViewerReadOnly.vue'
 import MergeProgressDialog from './MergeProgressDialog.vue'
@@ -18,45 +22,26 @@ const props = defineProps<{
   isActive: boolean
 }>()
 
-// 单个版本的 merge 状态
-interface RevisionMergeState {
-  revision: number
-  status: 'pending' | 'merging' | 'success' | 'conflict' | 'failed'
-  files?: string[]
-  message?: string
-}
-
-// 单个仓库的 merge 会话状态
-interface MergeSessionResult {
-  targetRepoName: string
-  targetRepoUrl: string
-  targetRepoPath: string
-  sourceRepoUrl: string
-  revisions: RevisionMergeState[]
-  currentRevisionIndex: number
-  allCompleted: boolean
-  success: boolean
-  message: string
-  files?: string[]
-  onlyFiles?: string[]
-  isMerging?: boolean
-  hasTreeConflict: boolean
-}
-
 const api = window.api
 
-const localRepositories = ref<RepositoryData[]>([])
-const remoteRepositories = ref<RepositoryData[]>([])
-const remoteUrlByLocalPath = ref<Record<string, string>>({})
-const selectedSourceRepo = ref<string>('')
+const {
+  selectedSourceRepo,
+  selectedTargetRepos,
+  searchLocalRepoKeyword,
+  searchLocalRepoInputValue,
+  searchRemoteRepoKeyword,
+  searchRemoteRepoInputValue,
+  sourceRepo,
+  targetRepos,
+  filteredRemoteRepositories,
+  filteredLocalRepositories,
+  toggleTargetRepo,
+  getRemoteRepoUrlByLocalPath,
+  setRemoteRepoUrlByLocalPath
+} = useBatchMergeRepositories(toRef(props, 'isActive'))
+
 const selectedRevisions = ref<number[]>([])
-const selectedTargetRepos = ref<Set<string>>(new Set())
 const mergeResults = ref<MergeSessionResult[]>([])
-const isLoading = ref(false)
-const searchLocalRepoKeyword = ref<string>('')
-const searchLocalRepoInputValue = ref<string>('')
-const searchRemoteRepoKeyword = ref<string>('')
-const searchRemoteRepoInputValue = ref<string>('')
 
 // SVN Log Dialog states
 const showSvnLogDialog = ref(false)
@@ -75,49 +60,6 @@ const diffViewerReadOnlyFilePath = ref<string>('')
 const diffViewerReadOnlyBaseRevision = ref<number>(0)
 const diffViewerReadOnlyTargetRevision = ref<number>(0)
 
-const loadRepositories = async (): Promise<void> => {
-  try {
-    const localRepos = await api.getLocalRepositories()
-    const remoteRepos = await api.listRepositories()
-
-    // 按照别名排序
-    localRepositories.value = [...localRepos].sort((a, b) => {
-      return a.alias.localeCompare(b.alias, 'zh-CN')
-    })
-    remoteRepositories.value = [...remoteRepos].sort((a, b) => {
-      return a.alias.localeCompare(b.alias, 'zh-CN')
-    })
-
-    const urlEntries = await Promise.all(
-      localRepositories.value.map(async (repo) => {
-        try {
-          const result = await api.getSvnRemoteUrl(repo.url)
-          return [repo.url, result.success ? result.url : ''] as const
-        } catch {
-          return [repo.url, ''] as const
-        }
-      })
-    )
-    remoteUrlByLocalPath.value = Object.fromEntries(urlEntries)
-  } catch (error) {
-    console.error('Failed to load repositories:', error)
-  }
-}
-
-onMounted(async () => {
-  await loadRepositories()
-})
-
-// Reload repositories when component becomes active
-watch(
-  () => props.isActive,
-  async (isActive, wasActive) => {
-    if (isActive && !wasActive) {
-      await loadRepositories()
-    }
-  }
-)
-
 // Auto-load logs when source repo is selected (only initial load)
 
 // Auto-load logs whenever source repo changes
@@ -130,93 +72,27 @@ watch(selectedSourceRepo, async (newValue) => {
   selectedRevisions.value = []
 })
 
-const sourceRepo = computed(() =>
-  remoteRepositories.value.find((r) => r.url === selectedSourceRepo.value)
-)
-
-const targetRepos = computed(() =>
-  localRepositories.value.filter((r) => selectedTargetRepos.value.has(r.url))
-)
-
-const getMergeResultForRepo = (repoUrl: string): MergeSessionResult | undefined => {
-  return mergeResults.value.find((result) => result.targetRepoUrl === repoUrl)
-}
-
-const hasConflictFiles = (result?: MergeSessionResult): boolean => {
-  if (result?.hasTreeConflict) return true
-  return Boolean(result?.files?.some((file) => file.startsWith('C')))
-}
-
-// 检查是否有目录冲突（tree conflict）
-const hasTreeConflict = (result?: MergeSessionResult): boolean => {
-  if (result?.hasTreeConflict) return true
-  if (!result?.files) return false
-  return result.files.some((file) => {
-    if (!file.startsWith('C')) return false
-    // 提取文件路径部分（跳过状态码）
-    const path = file.substring(1).trim()
-    // 目录通常以 / 或 \ 结尾，或者是纯目录路径
-    return path.endsWith('/') || path.endsWith('\\')
-  })
-}
-
-const getRepoMergeStatus = (repoUrl: string): 'success' | 'conflict' | 'error' | null => {
-  const result = getMergeResultForRepo(repoUrl)
-  if (!result || result.isMerging) return null
-  if (!result.success) return 'error'
-  return hasConflictFiles(result) ? 'conflict' : 'success'
-}
-
-const canMerge = computed(
-  () =>
-    selectedSourceRepo.value &&
-    selectedTargetRepos.value.size > 0 &&
-    selectedRevisions.value.length > 0
-)
-
-// Merge progress dialog states
-const showMergeDialog = ref(false)
-const mergeDialogLogs = ref<string[]>([])
-const mergeDialogCurrentTarget = ref('')
-const mergeDialogLoading = ref(false)
-const mergeDialogSuccess = ref<boolean | null>(null)
-const hasPendingMerge = ref(false)
-
-const resetMergeUiState = (): void => {
-  hasPendingMerge.value = false
-  showMergeDialog.value = false
-  mergeResults.value = []
-  selectedSourceRepo.value = ''
-  selectedTargetRepos.value = new Set()
-  selectedRevisions.value = []
-  mergeDialogLogs.value = []
-  mergeDialogCurrentTarget.value = ''
-  mergeDialogLoading.value = false
-  mergeDialogSuccess.value = null
-}
-
-const handleResetMergeState = (): void => {
-  resetMergeUiState()
-}
-
-const toggleTargetRepo = (repoUrl: string): void => {
-  if (selectedTargetRepos.value.has(repoUrl)) {
-    selectedTargetRepos.value.delete(repoUrl)
-  } else {
-    selectedTargetRepos.value.add(repoUrl)
-  }
-}
-
-// Check if alias matches search keywords (comma-separated)
-const matchesSearchKeywords = (alias: string, keywords: string): boolean => {
-  if (!keywords.trim()) return true
-  const keywordList = keywords
-    .split(',')
-    .map((k) => k.trim().toLowerCase())
-    .filter((k) => k.length > 0)
-  if (keywordList.length === 0) return true
-  return keywordList.some((keyword) => alias.toLowerCase().includes(keyword))
-}
+const {
+  isLoading,
+  showMergeDialog,
+  mergeDialogLogs,
+  mergeDialogLoading,
+  canMerge,
+  getMergeResultForRepo,
+  getRepoMergeStatus,
+  handleResetMergeState,
+  performMerge,
+  handleMergeDialogRefresh,
+  handleMergeCommitSuccess,
+  handleUpdateResult
+} = useBatchMergeExecution({
+  selectedSourceRepo,
+  selectedTargetRepos,
+  selectedRevisions,
+  sourceRepo,
+  targetRepos,
+  mergeResults
+})
 
 const handleRepoPanelClick = (repoUrl: string, event: MouseEvent): void => {
   // Prevent event bubbling if clicking on checkbox or other interactive elements
@@ -239,10 +115,6 @@ const openRepoDirectory = async (repoUrl: string): Promise<void> => {
   }
 }
 
-const getRemoteRepoUrlByLocalPath = (localPath: string): string => {
-  return remoteUrlByLocalPath.value[localPath] || ''
-}
-
 const viewRemoteLogsByLocalRepo = async (repo: RepositoryData): Promise<void> => {
   try {
     let remoteUrl = getRemoteRepoUrlByLocalPath(repo.url)
@@ -254,10 +126,7 @@ const viewRemoteLogsByLocalRepo = async (repo: RepositoryData): Promise<void> =>
         return
       }
       remoteUrl = result.url
-      remoteUrlByLocalPath.value = {
-        ...remoteUrlByLocalPath.value,
-        [repo.url]: remoteUrl
-      }
+      setRemoteRepoUrlByLocalPath(repo.url, remoteUrl)
     }
 
     remoteLogViewerRepoUrl.value = remoteUrl
@@ -267,41 +136,6 @@ const viewRemoteLogsByLocalRepo = async (repo: RepositoryData): Promise<void> =>
     const errorMsg = error instanceof Error ? error.message : '打开远程日志失败'
     alert(errorMsg)
   }
-}
-
-const getLastPathSegment = (value: string): string => {
-  if (!value) return ''
-  const normalized = value.replace(/\\/g, '/').replace(/\/+$/, '')
-  const last = normalized.split('/').pop() || ''
-  try {
-    return decodeURIComponent(last)
-  } catch {
-    return last
-  }
-}
-
-const validateTargetRepoPathMatch = (): boolean => {
-  const mismatchRepos: string[] = []
-  const sourceRemoteTail = getLastPathSegment(sourceRepo.value?.url || '')
-
-  if (!sourceRemoteTail) {
-    return window.confirm('无法校验远程仓库和本地仓库路径是否匹配，是否继续合并？')
-  }
-
-  for (const repo of targetRepos.value) {
-    const localTail = getLastPathSegment(repo.url)
-    if (!localTail || localTail !== sourceRemoteTail) {
-      mismatchRepos.push(repo.alias)
-    }
-  }
-
-  if (mismatchRepos.length > 0) {
-    return window.confirm(
-      `远程仓库和本地仓库路径不匹配: ${mismatchRepos.join('、')}。是否继续合并？`
-    )
-  }
-
-  return true
 }
 
 // (toggleResultExpanded removed — no merge results panel now)
@@ -344,185 +178,6 @@ const handleViewRemoteLogFileDiff = (
   diffViewerReadOnlyTargetRevision.value = revision
   showDiffViewerReadOnly.value = true
 }
-
-const handleMergeDialogRefresh = async (): Promise<void> => {
-  if (mergeResults.value.length === 0) return
-
-  const refreshedResults = await Promise.all(
-    mergeResults.value.map(async (result) => {
-      const repoPath = result.targetRepoPath || result.targetRepoUrl
-      if (!repoPath) return result
-
-      try {
-        const statusResult = await api.getSvnStatus(repoPath)
-        const files = statusResult.files
-          .map((f) => `${f.status}  ${f.path}`)
-          .filter((f) => ['C', 'M', 'A', 'D', 'R'].some((st) => f.startsWith(st)))
-
-        if (result.success) {
-          return {
-            ...result,
-            files,
-            onlyFiles: result.onlyFiles,
-            message: files.some((file) => file.startsWith('C')) ? '合并冲突' : '合并成功'
-          }
-        }
-
-        return {
-          ...result,
-          files
-        }
-      } catch (error) {
-        console.warn('[handleMergeDialogRefresh] Failed to refresh status for', repoPath, error)
-        return result
-      }
-    })
-  )
-
-  mergeResults.value = refreshedResults
-}
-
-const handleMergeCommitSuccess = (): void => {
-  // 提交成功后清除未完成合并标志
-  resetMergeUiState()
-}
-
-// 处理单个仓库的 merge 结果更新（在冲突解决并继续下一个版本后）
-const handleUpdateResult = (updatedResult: MergeSessionResult): void => {
-  console.log('[BatchMerge] 更新 merge 结果:', updatedResult)
-  mergeResults.value = mergeResults.value.map((item) => {
-    if (item.targetRepoUrl === updatedResult.targetRepoUrl) {
-      return updatedResult
-    }
-    return item
-  })
-}
-
-const performMerge = async (): Promise<void> => {
-  if (!canMerge.value || !sourceRepo.value) return
-
-  // 如果有待处理的合并，直接显示对话框
-  if (hasPendingMerge.value) {
-    showMergeDialog.value = true
-    return
-  }
-
-  const isRepoPathMatched = validateTargetRepoPathMatch()
-  if (!isRepoPathMatched) {
-    return
-  }
-
-  hasPendingMerge.value = true
-  isLoading.value = true
-  const source = { ...sourceRepo.value }
-  const targets = targetRepos.value.map((r) => ({ ...r }))
-  const revisions = [...selectedRevisions.value]
-
-  // 先渲染所有目标仓库的面板，避免执行过程中出现“暂无合并结果”
-  mergeResults.value = targets.map((target) => ({
-    targetRepoName: target.alias,
-    targetRepoUrl: target.url,
-    targetRepoPath: target.url,
-    sourceRepoUrl: source.url,
-    revisions: revisions.map((rev) => ({
-      revision: rev,
-      status: 'pending' as const,
-      files: [],
-      message: ''
-    })),
-    currentRevisionIndex: 0,
-    allCompleted: false,
-    success: false,
-    message: '合并中',
-    files: [],
-    onlyFiles: [],
-    isMerging: true,
-    hasTreeConflict: false
-  }))
-
-  // reset dialog
-  mergeDialogLogs.value = []
-  mergeDialogCurrentTarget.value = ''
-  mergeDialogLoading.value = true
-  mergeDialogSuccess.value = null
-  showMergeDialog.value = true
-
-  try {
-    let anyFailure = false
-    let anyTreeConflict = false
-
-    const mergeTasks = targets.map(async (target) => {
-      mergeDialogLogs.value.push(`开始合并到 ${target.alias}`)
-      mergeDialogCurrentTarget.value = target.alias
-
-      const res: MergeSessionResult = await api.performSingleMerge(source, target, revisions)
-      const url = res.targetRepoUrl || target.url
-
-      // 检查是否有目录冲突（tree conflict）
-      let updatedRes = res
-      if (hasTreeConflict(res)) {
-        anyTreeConflict = true
-        // 如果有目录冲突，添加特殊提示
-        const treeConflictMessage =
-          '\n⚠️ 检测到目录冲突（Tree Conflict）！\n建议执行 Revert 后手动合并，因为目录冲突无法通过工具自动解决。'
-        updatedRes = {
-          ...res,
-          hasTreeConflict: true,
-          message: res.message + treeConflictMessage
-        }
-        mergeDialogLogs.value.push(`[${target.alias}] ⚠️ 检测到目录冲突，建议 Revert 后人工处理`)
-      }
-
-      mergeResults.value = mergeResults.value.map((item) => {
-        if (item.targetRepoUrl !== target.url) return item
-        return {
-          ...updatedRes,
-          targetRepoName: updatedRes.targetRepoName || target.alias,
-          targetRepoUrl: url,
-          isMerging: false
-        }
-      })
-
-      // 记录合并日志
-      mergeDialogLogs.value.push(
-        `[${target.alias}] ${res.message} (${res.revisions.filter((r) => r.status === 'success' || r.status === 'conflict').length}/${res.revisions.length})`
-      )
-
-      if (res.success) {
-        mergeDialogLogs.value.push(`合并操作完成: ${target.alias}`)
-      } else {
-        anyFailure = true
-        const msg = res.message || '未知错误'
-        mergeDialogLogs.value.push(`合并失败: ${target.alias} - ${msg}`)
-      }
-    })
-
-    await Promise.all(mergeTasks)
-
-    if (anyTreeConflict) {
-      mergeDialogLogs.value.push(
-        '检测到目录冲突（Tree Conflict），请处理后在主界面点击“重置”按钮清空状态，再开始下一次 merge。'
-      )
-
-      mergeDialogLoading.value = false
-      mergeDialogSuccess.value = false
-
-      alert('检测到目录冲突（Tree Conflict），请处理后在主界面点击“重置”按钮清空状态。')
-      return
-    }
-
-    mergeDialogLoading.value = false
-    mergeDialogSuccess.value = !anyFailure
-  } catch (error) {
-    const errMsg = error instanceof Error ? error.message : String(error)
-    mergeDialogLogs.value.push(`合并过程发生异常: ${errMsg}`)
-    mergeDialogLoading.value = false
-    mergeDialogSuccess.value = false
-    console.error('Merge failed:', error)
-  } finally {
-    isLoading.value = false
-  }
-}
 </script>
 
 <template>
@@ -546,9 +201,7 @@ const performMerge = async (): Promise<void> => {
         </h3>
         <div class="source-repos-grid">
           <div
-            v-for="repo in remoteRepositories.filter((r) =>
-              matchesSearchKeywords(r.alias, searchRemoteRepoKeyword)
-            )"
+            v-for="repo in filteredRemoteRepositories"
             :key="repo.url"
             class="source-repo-panel"
             :class="{ 'is-selected': selectedSourceRepo === repo.url }"
@@ -620,6 +273,7 @@ const performMerge = async (): Promise<void> => {
               :disabled="isLoading"
               @click="handleResetMergeState"
             >
+              <RotateCcw :size="14" />
               <span>重置</span>
             </button>
             <button
@@ -636,11 +290,7 @@ const performMerge = async (): Promise<void> => {
         </h3>
         <div class="target-repos-grid">
           <div
-            v-for="repo in localRepositories.filter(
-              (r) =>
-                r.url !== selectedSourceRepo &&
-                matchesSearchKeywords(r.alias, searchLocalRepoKeyword)
-            )"
+            v-for="repo in filteredLocalRepositories"
             :key="repo.url"
             class="target-repo-panel"
             style="cursor: pointer"
@@ -898,10 +548,10 @@ const performMerge = async (): Promise<void> => {
   align-items: center;
   gap: 8px;
   padding: 8px 16px;
-  border: 1px solid var(--color-border);
+  border: 1px solid #a8adb6;
   border-radius: 6px;
-  background: var(--color-background-primary);
-  color: var(--color-text-primary);
+  background: #c7ccd4;
+  color: #1f2937;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
@@ -911,9 +561,8 @@ const performMerge = async (): Promise<void> => {
 }
 
 .reset-btn:hover:not(:disabled) {
-  border-color: var(--el-color-primary);
-  color: var(--el-color-primary);
-  background: var(--color-background-hover);
+  border-color: #8f96a3;
+  background: #b7bec8;
 }
 
 .reset-btn:disabled {

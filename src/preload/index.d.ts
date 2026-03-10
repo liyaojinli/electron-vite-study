@@ -1,5 +1,6 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
 import type { ApiHandlers } from '../main/api'
+import type { UpdateInfo } from '../shared/update'
 
 // 自动从 ApiHandlers 生成 API 类型
 type API = {
@@ -23,16 +24,7 @@ interface UpdaterAPI {
   checkForUpdates: () => Promise<void>
   downloadUpdate: () => Promise<void>
   installUpdate: () => void
-  onUpdateStatus: (
-    callback: (info: {
-      status: string
-      version?: string
-      progress?: number
-      error?: string
-      releaseNotes?: string
-      releaseDate?: string
-    }) => void
-  ) => () => void
+  onUpdateStatus: (callback: (info: UpdateInfo) => void) => () => void
 }
 
 declare global {

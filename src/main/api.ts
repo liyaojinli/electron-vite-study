@@ -5,6 +5,7 @@ import * as path from 'path'
 import * as fs from 'fs'
 import { promisify } from 'util'
 import type { RepositoryData } from '../shared/repository'
+import type { MergeSessionResult, RevisionMergeState } from '../shared/merge'
 import {
   createRepository,
   insertRepository,
@@ -36,31 +37,6 @@ const getSslTrustFlags = (pathOrUrl: string): string => {
     return ''
   }
   return ' --non-interactive --trust-server-cert --trust-server-cert-failures=unknown-ca,cn-mismatch,expired,not-yet-valid,other'
-}
-
-// 单个版本的 merge 状态
-export interface RevisionMergeState {
-  revision: number
-  status: 'pending' | 'merging' | 'success' | 'conflict' | 'failed'
-  files?: string[] // 受影响的文件列表（格式：'C  path/to/file'）
-  message?: string
-}
-
-// 单个仓库的 merge 会话状态
-export interface MergeSessionResult {
-  targetRepoName: string
-  targetRepoUrl: string
-  targetRepoPath: string
-  sourceRepoUrl: string
-  revisions: RevisionMergeState[]
-  currentRevisionIndex: number // 当前正在处理的版本索引（-1表示全部完成）
-  allCompleted: boolean // 所有版本是否都已完成
-  success: boolean // 整体是否成功（无失败的版本）
-  message: string
-  files?: string[] // 当前所有受影响的文件（累积）
-  onlyFiles?: string[] // 仅文件（排除目录）的受影响文件列表
-  isMerging?: boolean // 是否正在 merge 中
-  hasTreeConflict: boolean // 是否检测到目录冲突（Tree Conflict）
 }
 
 const getAbsoluteFilePath = (repoPath: string, filePath: string): string => {

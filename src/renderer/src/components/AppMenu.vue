@@ -1,20 +1,12 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
 import { Cloud, HardDrive, GitMerge, RefreshCw } from 'lucide-vue-next'
+import type { UpdateInfo } from '../../../shared/update'
 
 type MenuItem = {
   id: string
   label: string
   icon?: typeof Cloud
-}
-
-interface UpdateInfo {
-  status: string
-  version?: string
-  progress?: number
-  error?: string
-  releaseNotes?: string
-  releaseDate?: string
 }
 
 const props = defineProps<{ items: MenuItem[]; activeId?: string; isDark: boolean }>()

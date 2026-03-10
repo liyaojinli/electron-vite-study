@@ -1,9 +1,9 @@
 <template>
-  <div v-if="visible" class="merge-dialog-backdrop">
-    <div class="merge-dialog">
-      <div class="merge-dialog-header">
+  <div v-if="visible" class="merge-dialog-backdrop app-dialog-backdrop">
+    <div class="merge-dialog app-dialog-shell">
+      <div class="merge-dialog-header app-dialog-header">
         <div class="merge-title">合并进度</div>
-        <button class="close-btn" @click="$emit('close')">✕</button>
+        <button class="close-btn app-dialog-close" @click="$emit('close')">✕</button>
       </div>
       <!-- Commit Info Section -->
       <div class="commit-info-section">
@@ -217,7 +217,7 @@
           <div v-else class="execution-log-empty">暂无执行日志</div>
         </div>
       </div>
-      <div class="merge-dialog-footer">
+      <div class="merge-dialog-footer app-dialog-footer">
         <div class="status">
           <span v-if="isLoading">进行中…</span>
           <span v-else-if="isCommitting">提交中…</span>
@@ -225,13 +225,13 @@
         </div>
         <div class="footer-actions">
           <button
-            class="commit-action"
+            class="app-action-primary"
             :disabled="isLoading || isCommitting || !canCommit"
             @click="handleCommit"
           >
             提交
           </button>
-          <button class="close-action" @click="$emit('close')">关闭</button>
+          <button class="app-action-secondary" @click="$emit('close')">关闭</button>
         </div>
       </div>
     </div>
@@ -267,38 +267,27 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed } from 'vue'
 import { ChevronDown, ChevronRight } from 'lucide-vue-next'
 import { LoaderCircle } from 'lucide-vue-next'
 import SvnConflictMerge from './SvnConflictMerge.vue'
 import SvnDiffViewer from './SvnDiffViewer.vue'
 import SvnBeforeCommitConfirm from './SvnBeforeCommitConfirm.vue'
-import SvnLogViewer, { type SvnCommitLog } from './SvnLogViewer.vue'
-
-// 单个版本的 merge 状态
-interface RevisionMergeState {
-  revision: number
-  status: 'pending' | 'merging' | 'success' | 'conflict' | 'failed'
-  files?: string[]
-  message?: string
-}
-
-// 单个仓库的 merge 会话状态
-interface MergeSessionResult {
-  targetRepoName: string
-  targetRepoUrl: string
-  targetRepoPath: string
-  sourceRepoUrl: string
-  revisions: RevisionMergeState[]
-  currentRevisionIndex: number
-  allCompleted: boolean
-  success: boolean
-  message: string
-  files?: string[]
-  onlyFiles?: string[]
-  isMerging?: boolean
-  hasTreeConflict: boolean
-}
+import SvnLogViewer from './SvnLogViewer.vue'
+import {
+  getCommitFilePaths as collectCommitFilePaths,
+  getDisplayEntries as collectDisplayEntries,
+  getDisplayFileName as formatDisplayFileName,
+  getEffectiveFileStatus as resolveEffectiveFileStatus,
+  hasUnresolvedConflicts as detectUnresolvedConflicts,
+  isConflictEntry,
+  isRevisionConflictResolved as checkRevisionConflictResolved,
+  parseMergeFilePath
+} from '../utils/mergeProgress'
+import { useMergeResultPanels } from '../composables/useMergeResultPanels'
+import { useMergeCommitFlow } from '../composables/useMergeCommitFlow'
+import { useMergeRetryRepositories } from '../composables/useMergeRetryRepositories'
+import type { MergeSessionResult, RevisionMergeState } from '../../../shared/merge'
 
 const getResultStatusClass = (result: MergeSessionResult): string => {
   if (result.isMerging) return 'merging'
@@ -341,231 +330,46 @@ const props = defineProps<{
 const emit = defineEmits(['close', 'refresh', 'commit-success', 'update-result'])
 
 const api = window.api
-const commitUsername = ref('')
-const commitPassword = ref('')
-const commitMessage = ref('')
-const isCommitting = ref(false)
-
-// SVN 日志查看器相关状态
-const logViewerVisible = ref(false)
-const commitLogs = ref<SvnCommitLog[]>([])
-
-// 提交前确认对话框相关状态
-const beforeCommitConfirmVisible = ref(false)
-interface FileWithStatus {
-  path: string
-  status: string // M, A, D, R
-}
-interface RepositoryToConfirm {
-  targetRepoName: string
-  targetRepoPath: string
-  files: FileWithStatus[]
-}
-const repositoriesToConfirm = ref<RepositoryToConfirm[]>([])
-const confirmedReposForCommit = ref<Set<string>>(new Set())
 
 // 跟踪已解决的冲突文件 (key: repoPath::filePath)
 const resolvedConflicts = ref<Set<string>>(new Set())
-
-const normalizeSourceRepoForCommitMessage = (sourceRepoUrl: string): string => {
-  try {
-    const parsed = new URL(sourceRepoUrl)
-    const normalizedPath = (parsed.pathname || '').replace(/\/+$/, '')
-    return normalizedPath || '/'
-  } catch {
-    // Fallback for non-standard URL strings.
-    const normalized = sourceRepoUrl.replace(/^https?:\/\/[^/]+/i, '').replace(/\/+$/, '')
-    return normalized || sourceRepoUrl
-  }
-}
-
-const normalizeRevisionMessage = (message: string): string => {
-  const singleLine = message.replace(/\r?\n/g, ' ').trim()
-  return singleLine || '(no message)'
-}
-
-// 生成默认的 commit message
-const generateDefaultCommitMessage = async (): Promise<string> => {
-  if (!props.sourceRepoUrl || !props.selectedRevisions || props.selectedRevisions.length === 0) {
-    return ''
-  }
-
-  const revisions = [...props.selectedRevisions].sort((a, b) => a - b)
-  const sourceRepoPath = normalizeSourceRepoForCommitMessage(props.sourceRepoUrl)
-
-  let revisionMessageMap = new Map<number, string>()
-  try {
-    // 优先按指定 revision 精确从远程源仓库抓取提交信息，避免被最近 N 条日志截断。
-    const exactLogs = await api.getSvnLogByRevisions(props.sourceRepoUrl, revisions)
-    revisionMessageMap = new Map(exactLogs.map((log) => [log.revision, log.message]))
-
-    // 兼容兜底：若仍有缺失，再尝试一次批量日志。
-    const missingRevisions = revisions.filter((revision) => !revisionMessageMap.has(revision))
-    if (missingRevisions.length > 0) {
-      const logs = await api.getSvnLog(props.sourceRepoUrl, 5000)
-      for (const log of logs) {
-        if (!revisionMessageMap.has(log.revision)) {
-          revisionMessageMap.set(log.revision, log.message)
-        }
-      }
-    }
-  } catch (error) {
-    console.warn('[MergeProgressDialog] 获取源仓库提交信息失败:', error)
-  }
-
-  const revisionLines = revisions.map((revision) => {
-    const sourceMessage = normalizeRevisionMessage(revisionMessageMap.get(revision) || '')
-    return `r${revision} ${sourceMessage}`
-  })
-
-  return [`Merged from ${sourceRepoPath}`, ...revisionLines].join('\n')
-}
-
-// 当对话框打开或数据变化时，生成默认 commit message
-watch(
-  () => [props.visible, props.sourceRepoUrl, props.selectedRevisions],
-  async ([visible], _oldValue, onCleanup) => {
-    let canceled = false
-    onCleanup(() => {
-      canceled = true
-    })
-
-    if (visible) {
-      const message = await generateDefaultCommitMessage()
-      if (!canceled && props.visible) {
-        commitMessage.value = message
-      }
-    }
-  },
-  { immediate: true, deep: true }
-)
-
-const canCommit = computed(() => {
-  const hasMessage = commitMessage.value.trim() !== ''
-  const hasValidRepos = props.results.some((r) => r.success && r.targetRepoPath)
-  const hasNoConflicts = props.results.every((r) => !hasUnresolvedConflicts(r))
-  return hasMessage && hasValidRepos && hasNoConflicts
-})
 
 const conflictMergeVisible = ref(false)
 const diffViewerVisible = ref(false)
 const selectedRepoPath = ref('')
 const selectedFilePath = ref('')
-const panelExpandedState = ref<Record<string, boolean>>({})
-const retryingState = ref<Record<string, boolean>>({})
-
-const getPanelKey = (result: MergeSessionResult): string => {
-  return `${result.targetRepoName}::${result.targetRepoPath || ''}`
-}
-
-const isPanelExpanded = (result: MergeSessionResult): boolean => {
-  const key = getPanelKey(result)
-  return panelExpandedState.value[key] ?? false
-}
-
-const togglePanel = (result: MergeSessionResult): void => {
-  const key = getPanelKey(result)
-  panelExpandedState.value = {
-    ...panelExpandedState.value,
-    [key]: !isPanelExpanded(result)
-  }
-}
-
-watch(
-  () => props.results,
-  (results) => {
-    const nextState: Record<string, boolean> = {}
-    for (const result of results) {
-      const key = getPanelKey(result)
-      // 检测冲突或错误时自动展开，否则保持当前状态或默认折叠
-      const hasConflictOrError = !result.success || hasUnresolvedConflicts(result)
-      const shouldExpand = hasConflictOrError && !result.isMerging
-      nextState[key] = panelExpandedState.value[key] ?? (shouldExpand ? true : false)
-    }
-    panelExpandedState.value = nextState
-  },
-  { immediate: true, deep: true }
-)
 
 const parseFilePath = (fileEntry: string, repoPath?: string): string => {
-  // File entries are in format like "C  path/to/file.txt" or "U  file.txt"
-  // Remove the status prefix (first character and spaces)
-  let filePath = fileEntry.substring(3).trim()
-
-  // Remove repo path prefix if provided
-  if (repoPath && filePath.startsWith(repoPath)) {
-    filePath = filePath.substring(repoPath.length)
-    // Remove leading slash
-    filePath = filePath.replace(/^[\\/]+/, '')
-  }
-
-  return filePath
-}
-
-const isCommitableRelativePath = (filePath: string): boolean => {
-  const normalized = filePath.trim().replace(/\\/g, '/')
-  return normalized !== '' && normalized !== '.' && normalized !== './'
+  return parseMergeFilePath(fileEntry, repoPath)
 }
 
 const getEffectiveFileStatus = (fileEntry: string, repoPath?: string): string => {
-  const rawStatus = fileEntry.substring(0, 1)
-  if (rawStatus !== 'C' || !repoPath) return rawStatus
-
-  const filePath = parseFilePath(fileEntry, repoPath)
-  return isConflictResolved(repoPath, filePath) ? 'M' : 'C'
+  return resolveEffectiveFileStatus(fileEntry, repoPath, isConflictResolved)
 }
 
 const hasUnresolvedConflicts = (result: MergeSessionResult): boolean => {
-  if (result.hasTreeConflict) {
-    return true
-  }
-
-  if (
-    result.revisions?.some(
-      (revision) =>
-        revision.status === 'conflict' &&
-        (!result.targetRepoPath || !isRevisionConflictResolved(revision, result.targetRepoPath))
-    )
-  ) {
-    return true
-  }
-
-  if (!result.files || !result.targetRepoPath) return false
-  return result.files.some(
-    (fileEntry) => getEffectiveFileStatus(fileEntry, result.targetRepoPath) === 'C'
-  )
+  return detectUnresolvedConflicts(result, isConflictResolved)
 }
 
+const { getPanelKey, isPanelExpanded, togglePanel } = useMergeResultPanels({
+  results: computed(() => props.results),
+  hasUnresolvedConflicts
+})
+
 const getDisplayFileName = (fileEntry: string, repoPath?: string): string => {
-  // Get status prefix and relative path for display.
-  // Resolved conflicts are shown as M to reflect current state in this dialog.
-  const effectiveStatus = getEffectiveFileStatus(fileEntry, repoPath)
-  const statusPrefix = `${effectiveStatus}  `
-  const relativePath = parseFilePath(fileEntry, repoPath)
-  return statusPrefix + relativePath
+  return formatDisplayFileName(fileEntry, repoPath, isConflictResolved)
 }
 
 const getDisplayEntries = (result: MergeSessionResult): string[] => {
-  return result.onlyFiles || result.files || []
+  return collectDisplayEntries(result)
 }
 
 const isConflict = (fileEntry: string, repoPath?: string): boolean => {
-  return getEffectiveFileStatus(fileEntry, repoPath) === 'C'
+  return isConflictEntry(fileEntry, repoPath, isConflictResolved)
 }
 
 const getCommitFilePaths = (result: MergeSessionResult): string[] => {
-  const entries = result.onlyFiles || result.files || []
-  if (entries.length === 0 || !result.targetRepoPath) return []
-
-  const commitableStatuses = new Set(['A', 'M', 'D', 'R'])
-  const filePaths = entries
-    .filter((fileEntry) =>
-      commitableStatuses.has(getEffectiveFileStatus(fileEntry, result.targetRepoPath))
-    )
-    .map((fileEntry) => parseFilePath(fileEntry, result.targetRepoPath))
-    .filter((filePath) => isCommitableRelativePath(filePath))
-
-  return Array.from(new Set(filePaths))
+  return collectCommitFilePaths(result, isConflictResolved)
 }
 
 const handleFileClick = (result: MergeSessionResult, fileEntry: string): void => {
@@ -653,48 +457,12 @@ const handleConflictResolved = async (): Promise<void> => {
   }
 }
 
-const canRetryRepository = (result: MergeSessionResult): boolean => {
-  const hasFailedRevision = result.revisions?.some((rev) => rev.status === 'failed')
-  return Boolean(
-    hasFailedRevision && result.targetRepoPath && result.sourceRepoUrl && !result.isMerging
-  )
-}
-
-const isRetryingRepository = (result: MergeSessionResult): boolean => {
-  const key = getPanelKey(result)
-  return Boolean(retryingState.value[key])
-}
-
-const handleRetryRepository = async (result: MergeSessionResult): Promise<void> => {
-  if (!canRetryRepository(result)) return
-
-  const key = getPanelKey(result)
-  retryingState.value = {
-    ...retryingState.value,
-    [key]: true
-  }
-
-  try {
-    // 将 Vue 响应式对象转换为纯对象，避免 IPC 克隆错误
-    const plainSession = JSON.parse(JSON.stringify(result))
-    const updatedResult = await api.retryMergeSession(
-      result.sourceRepoUrl,
-      result.targetRepoPath,
-      plainSession
-    )
-
-    emit('update-result', updatedResult)
-    emit('refresh')
-  } catch (error) {
-    console.error('[MergeProgressDialog] 重试仓库 merge 失败:', error)
-    alert(`重试失败: ${error instanceof Error ? error.message : '未知错误'}`)
-  } finally {
-    retryingState.value = {
-      ...retryingState.value,
-      [key]: false
-    }
-  }
-}
+const { canRetryRepository, isRetryingRepository, handleRetryRepository } =
+  useMergeRetryRepositories({
+    getPanelKey,
+    onUpdateResult: (updatedResult) => emit('update-result', updatedResult),
+    onRefresh: () => emit('refresh')
+  })
 
 // 检查文件是否已解决
 const isConflictResolved = (repoPath: string, filePath: string): boolean => {
@@ -704,17 +472,7 @@ const isConflictResolved = (repoPath: string, filePath: string): boolean => {
 
 // 检查某个版本的所有冲突是否都已解决
 const isRevisionConflictResolved = (revision: RevisionMergeState, repoPath: string): boolean => {
-  if (revision.status !== 'conflict') return false
-  if (!revision.files || revision.files.length === 0) return false
-
-  // 检查该版本的所有冲突文件是否都已解决
-  const conflictFiles = revision.files.filter((f) => f.startsWith('C'))
-  if (conflictFiles.length === 0) return false
-
-  return conflictFiles.every((fileEntry) => {
-    const filePath = parseFilePath(fileEntry, repoPath)
-    return isConflictResolved(repoPath, filePath)
-  })
+  return checkRevisionConflictResolved(revision, repoPath, isConflictResolved)
 }
 
 // 获取版本的有效状态（考虑已解决的冲突）
@@ -752,181 +510,32 @@ const getEffectiveRevisionStatus = (
   return '待处理'
 }
 
-const handleCommit = async (): Promise<void> => {
-  if (!canCommit.value) return
-
-  // 检查所有冲突文件是否都已解决
-  const unresolvedConflicts: string[] = []
-  for (const result of props.results) {
-    if (result.hasTreeConflict) {
-      unresolvedConflicts.push(`${result.targetRepoName}: 检测到目录冲突（Tree Conflict）`)
-      continue
-    }
-
-    const hasRevisionConflict = result.revisions?.some((revision) => revision.status === 'conflict')
-    if (hasRevisionConflict && result.targetRepoPath && hasUnresolvedConflicts(result)) {
-      unresolvedConflicts.push(`${result.targetRepoName}: 存在未解决的冲突版本`)
-      continue
-    }
-
-    if (result.success && result.files && result.targetRepoPath) {
-      const conflictFiles = result.files.filter((f) => isConflict(f, result.targetRepoPath))
-      for (const fileEntry of conflictFiles) {
-        const filePath = parseFilePath(fileEntry, result.targetRepoPath)
-        if (!isConflictResolved(result.targetRepoPath, filePath)) {
-          unresolvedConflicts.push(`${result.targetRepoName}: ${filePath}`)
-        }
-      }
-    }
-  }
-
-  if (unresolvedConflicts.length > 0) {
-    alert(
-      `无法提交：以下冲突文件尚未解决\n\n${unresolvedConflicts.join('\n')}\n\n请先解决所有冲突文件后再提交。`
-    )
-    return
-  }
-
-  // 构建要确认的仓库列表，包含文件状态信息
-  const successRepos = props.results.filter((r) => r.success && r.targetRepoPath)
-  const repositories: RepositoryToConfirm[] = []
-
-  for (const result of successRepos) {
-    const commitFilePaths = getCommitFilePaths(result)
-    if (commitFilePaths.length > 0) {
-      // 获取仓库的 svn status 来确定文件状态
-      try {
-        const statusResult = await api.getSvnStatus(result.targetRepoPath!)
-        const statusMap = new Map(statusResult.files.map((f) => [f.path, f.status]))
-
-        const filesWithStatus: FileWithStatus[] = commitFilePaths.map((filePath) => ({
-          path: filePath,
-          status: statusMap.get(filePath) || 'M' // 默认为 M
-        }))
-
-        repositories.push({
-          targetRepoName: result.targetRepoName,
-          targetRepoPath: result.targetRepoPath!,
-          files: filesWithStatus
-        })
-      } catch (error) {
-        console.error('Failed to get SVN status for', result.targetRepoName, error)
-        // 失败时用默认状态
-        const filesWithStatus: FileWithStatus[] = commitFilePaths.map((filePath) => ({
-          path: filePath,
-          status: 'M'
-        }))
-        repositories.push({
-          targetRepoName: result.targetRepoName,
-          targetRepoPath: result.targetRepoPath!,
-          files: filesWithStatus
-        })
-      }
-    }
-  }
-
-  if (repositories.length === 0) {
-    alert('未找到可提交的文件')
-    return
-  }
-
-  // 显示确认对话框
-  repositoriesToConfirm.value = repositories
-  confirmedReposForCommit.value.clear()
-  // 默认全选
-  for (const repo of repositories) {
-    confirmedReposForCommit.value.add(repo.targetRepoPath)
-  }
-  beforeCommitConfirmVisible.value = true
-}
-
-// 在用户确认要提交的仓库后执行实际提交
-const handleConfirmCommit = async (confirmedRepoPaths: string[]): Promise<void> => {
-  beforeCommitConfirmVisible.value = false
-
-  isCommitting.value = true
-  const successRepos = props.results.filter((r) => r.success && r.targetRepoPath)
-  const errors: string[] = []
-
-  // 清空日志并准备收集新的日志
-  commitLogs.value = []
-
-  // 创建一个快速查找 Set
-  const confirmedSet = new Set(confirmedRepoPaths)
-
-  for (const result of successRepos) {
-    // 只对确认的仓库进行提交
-    if (!confirmedSet.has(result.targetRepoPath!)) {
-      continue
-    }
-
-    try {
-      const commitFilePaths = getCommitFilePaths(result)
-      if (commitFilePaths.length === 0) {
-        const errorMessage = '未找到本次 merge 的可提交文件'
-        errors.push(`${result.targetRepoName}: ${errorMessage}`)
-        commitLogs.value.push({
-          repoName: result.targetRepoName,
-          command: 'svn commit (no files to commit)',
-          output: errorMessage,
-          success: false
-        })
-        continue
-      }
-
-      // 如果用户名和密码都为空，则不传递认证信息，使用缓存的凭据
-      const hasAuth = commitUsername.value.trim() !== '' && commitPassword.value.trim() !== ''
-
-      const commitResult = hasAuth
-        ? await api.svnCommit(
-            result.targetRepoPath!,
-            commitMessage.value,
-            commitFilePaths,
-            commitUsername.value,
-            commitPassword.value
-          )
-        : await api.svnCommit(result.targetRepoPath!, commitMessage.value, commitFilePaths)
-
-      // 收集日志
-      commitLogs.value.push({
-        repoName: result.targetRepoName,
-        command: commitResult.command || 'svn commit (command not available)',
-        output: commitResult.output || commitResult.message,
-        success: commitResult.success
-      })
-
-      if (!commitResult.success) {
-        errors.push(`${result.targetRepoName}: ${commitResult.message}`)
-      }
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : '未知错误'
-      errors.push(`${result.targetRepoName}: ${errorMessage}`)
-      commitLogs.value.push({
-        repoName: result.targetRepoName,
-        command: 'svn commit (exception occurred)',
-        output: errorMessage,
-        success: false
-      })
-    }
-  }
-
-  isCommitting.value = false
-
-  // 显示日志查看器而不是 alert
-  logViewerVisible.value = true
-}
-
-// 关闭日志查看器
-const handleLogViewerClose = (): void => {
-  logViewerVisible.value = false
-
-  // 如果有成功的提交，触发成功事件并关闭对话框
-  const hasSuccess = commitLogs.value.some((log) => log.success)
-  if (hasSuccess) {
-    emit('commit-success')
-    emit('close')
-  }
-}
+const {
+  commitUsername,
+  commitPassword,
+  commitMessage,
+  isCommitting,
+  logViewerVisible,
+  commitLogs,
+  beforeCommitConfirmVisible,
+  repositoriesToConfirm,
+  canCommit,
+  handleCommit,
+  handleConfirmCommit,
+  handleLogViewerClose
+} = useMergeCommitFlow({
+  visible: computed(() => props.visible),
+  sourceRepoUrl: computed(() => props.sourceRepoUrl),
+  selectedRevisions: computed(() => props.selectedRevisions),
+  results: computed(() => props.results),
+  hasUnresolvedConflicts,
+  isConflict,
+  parseFilePath,
+  isConflictResolved,
+  getCommitFilePaths,
+  onCommitSuccess: () => emit('commit-success'),
+  onRequestClose: () => emit('close')
+})
 </script>
 
 <style scoped>
@@ -1299,30 +908,14 @@ const handleLogViewerClose = (): void => {
   word-break: break-word;
 }
 .merge-dialog-backdrop {
-  position: fixed;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.35);
   z-index: 2000;
 }
 .merge-dialog {
   width: 80vw;
   height: 80vh;
-  display: flex;
-  flex-direction: column;
-  background: var(--color-background-primary);
-  border: 1px solid var(--color-border);
   border-radius: 8px;
-  overflow: hidden;
 }
 .merge-dialog-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--color-border);
   flex-shrink: 0;
 }
 .merge-title {
@@ -1330,11 +923,7 @@ const handleLogViewerClose = (): void => {
 }
 
 .close-btn {
-  overflow: hidden;
-  background: transparent;
-  border: none;
   font-size: 14px;
-  cursor: pointer;
 }
 .commit-info-section {
   padding: 12px 16px;
@@ -1413,11 +1002,8 @@ const handleLogViewerClose = (): void => {
   white-space: pre-wrap;
 }
 .merge-dialog-footer {
-  display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 16px;
-  border-top: 1px solid var(--color-border);
   flex-shrink: 0;
 }
 .footer-actions {
@@ -1429,26 +1015,5 @@ const handleLogViewerClose = (): void => {
 }
 .status .error {
   color: var(--color-error);
-}
-.commit-action {
-  padding: 6px 16px;
-  border-radius: 6px;
-  border: 1px solid var(--color-primary);
-  background: var(--color-primary);
-  color: white;
-  cursor: pointer;
-  font-weight: 500;
-  transition: all 0.2s;
-}
-.commit-action:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.close-action {
-  padding: 6px 12px;
-  border-radius: 6px;
-  border: 1px solid var(--color-border);
-  background: var(--color-background-primary);
-  cursor: pointer;
 }
 </style>
