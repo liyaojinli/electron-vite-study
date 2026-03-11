@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, toRef } from 'vue'
+import { ref, toRef, watch } from 'vue'
 import { File, Folder, Search, X, XCircle } from 'lucide-vue-next'
 import { useSvnRemoteLogViewer } from '@renderer/composables/useSvnRemoteLogViewer'
 import type { SvnChangedFile } from '@renderer/types/svn'
@@ -21,6 +21,16 @@ const props = withDefaults(defineProps<Props>(), {
   allowFileDiff: false,
   selectedRevisions: () => []
 })
+
+const selectedLimit = ref<number>(props.limit)
+const limitOptions = [100, 200, 300, 500]
+
+watch(
+  () => props.limit,
+  (value) => {
+    selectedLimit.value = value
+  }
+)
 
 const emit = defineEmits<{
   close: []
@@ -51,7 +61,7 @@ const {
 } = useSvnRemoteLogViewer(
   {
     repoUrl: toRef(props, 'repoUrl'),
-    limit: toRef(props, 'limit'),
+    limit: selectedLimit,
     visible: toRef(props, 'visible'),
     selectedRevisionsProp: toRef(props, 'selectedRevisions'),
     onSelectedRevisionsChange: (revisions) => {
@@ -109,6 +119,19 @@ const handleFileLineClick = (file: SvnChangedFile, revision: number): void => {
             <input v-model="startDate" type="date" class="date-input" :disabled="!hasRepoUrl" />
             <span class="date-separator">至</span>
             <input v-model="endDate" type="date" class="date-input" :disabled="!hasRepoUrl" />
+            <el-select
+              v-model="selectedLimit"
+              class="limit-select"
+              :disabled="!hasRepoUrl"
+              @change="loadLogs"
+            >
+              <el-option
+                v-for="item in limitOptions"
+                :key="item"
+                :label="`${item} 条`"
+                :value="item"
+              />
+            </el-select>
             <button
               class="app-button btn-small is-primary"
               :disabled="!hasRepoUrl"
@@ -239,6 +262,9 @@ const handleFileLineClick = (file: SvnChangedFile, revision: number): void => {
 .remote-log-dialog {
   width: min(1200px, 96vw);
   height: min(760px, 92vh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   border-radius: 10px;
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.28);
 }
@@ -246,6 +272,7 @@ const handleFileLineClick = (file: SvnChangedFile, revision: number): void => {
 .remote-log-dialog.is-embedded {
   width: 100%;
   height: min(620px, 70vh);
+  background: var(--color-background-primary);
   border: none;
   border-radius: 0;
   box-shadow: none;
@@ -368,6 +395,11 @@ const handleFileLineClick = (file: SvnChangedFile, revision: number): void => {
   width: 220px;
   padding: 0 10px;
 }
+
+.limit-select {
+  width: 110px;
+}
+
 .app-button.btn-small {
   padding: 6px 12px;
   font-size: 13px;
