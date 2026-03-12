@@ -29,6 +29,10 @@ const {
   selectedTargetRepos,
   searchLocalRepoKeyword,
   searchLocalRepoInputValue,
+  selectedLocalGroupIds,
+  localGroupFilterOptions,
+  selectedRemoteGroupIds,
+  remoteGroupFilterOptions,
   searchRemoteRepoKeyword,
   searchRemoteRepoInputValue,
   sourceRepo,
@@ -197,6 +201,23 @@ const handleViewRemoteLogFileDiff = (
               class="local-repo-search-input"
               @keyup.enter="searchRemoteRepoKeyword = searchRemoteRepoInputValue"
             />
+            <el-select
+              v-model="selectedRemoteGroupIds"
+              multiple
+              collapse-tags
+              collapse-tags-tooltip
+              clearable
+              filterable
+              placeholder="按分组筛选"
+              class="local-group-filter-select"
+            >
+              <el-option
+                v-for="group in remoteGroupFilterOptions"
+                :key="group.id"
+                :label="group.name"
+                :value="group.id"
+              />
+            </el-select>
           </div>
         </h3>
         <div class="source-repos-grid">
@@ -266,6 +287,23 @@ const handleViewRemoteLogFileDiff = (
               class="local-repo-search-input"
               @keyup.enter="searchLocalRepoKeyword = searchLocalRepoInputValue"
             />
+            <el-select
+              v-model="selectedLocalGroupIds"
+              multiple
+              collapse-tags
+              collapse-tags-tooltip
+              clearable
+              filterable
+              placeholder="按分组筛选"
+              class="local-group-filter-select"
+            >
+              <el-option
+                v-for="group in localGroupFilterOptions"
+                :key="group.id"
+                :label="group.name"
+                :value="group.id"
+              />
+            </el-select>
             <button
               type="button"
               class="reset-btn"
@@ -515,6 +553,15 @@ const handleViewRemoteLogFileDiff = (
 
 .local-repo-search-input::placeholder {
   color: var(--color-text-secondary);
+}
+
+.local-group-filter-select {
+  width: 220px;
+}
+
+.local-group-filter-select :deep(.el-select__wrapper) {
+  min-height: 30px;
+  font-size: 12px;
 }
 
 /* 使用现有的 .update-btn / .panel-action-label 样式来匹配更新/还原按钮 */

@@ -1,6 +1,17 @@
 import { computed, onMounted, onUnmounted, ref, watch, type Ref } from 'vue'
-import type { RepositoryData } from '../../../shared/repository'
+import type {
+  RepositoryData,
+  RepositoryGroupData,
+  RepositoryGroupMembershipData
+} from '../../../shared/repository'
 import { onRepositoriesChanged } from '../utils/repositoryEvents'
+
+const UNGROUPED_GROUP_FILTER_ID = '__ungrouped__'
+
+type LocalGroupFilterOption = {
+  id: string
+  name: string
+}
 
 const matchesSearchKeywords = (alias: string, keywords: string): boolean => {
   if (!keywords.trim()) return true
@@ -20,8 +31,12 @@ interface UseBatchMergeRepositoriesResult {
   selectedTargetRepos: Ref<Set<string>>
   searchLocalRepoKeyword: Ref<string>
   searchLocalRepoInputValue: Ref<string>
+  selectedRemoteGroupIds: Ref<string[]>
+  remoteGroupFilterOptions: Readonly<Ref<LocalGroupFilterOption[]>>
   searchRemoteRepoKeyword: Ref<string>
   searchRemoteRepoInputValue: Ref<string>
+  selectedLocalGroupIds: Ref<string[]>
+  localGroupFilterOptions: Readonly<Ref<LocalGroupFilterOption[]>>
   loadRepositories: () => Promise<void>
   sourceRepo: Readonly<Ref<RepositoryData | undefined>>
   targetRepos: Readonly<Ref<RepositoryData[]>>
@@ -40,20 +55,33 @@ export const useBatchMergeRepositories = (
 
   const localRepositories = ref<RepositoryData[]>([])
   const remoteRepositories = ref<RepositoryData[]>([])
+  const localRepositoryGroups = ref<RepositoryGroupData[]>([])
+  const localGroupMemberships = ref<RepositoryGroupMembershipData[]>([])
+  const remoteRepositoryGroups = ref<RepositoryGroupData[]>([])
+  const remoteGroupMemberships = ref<RepositoryGroupMembershipData[]>([])
   const remoteUrlByLocalPath = ref<Record<string, string>>({})
   const selectedSourceRepo = ref<string>('')
   const selectedTargetRepos = ref<Set<string>>(new Set())
 
   const searchLocalRepoKeyword = ref<string>('')
   const searchLocalRepoInputValue = ref<string>('')
+  const selectedRemoteGroupIds = ref<string[]>([])
   const searchRemoteRepoKeyword = ref<string>('')
   const searchRemoteRepoInputValue = ref<string>('')
+  const selectedLocalGroupIds = ref<string[]>([])
   let stopRepositoryChangeListener: (() => void) | null = null
 
   const loadRepositories = async (): Promise<void> => {
     try {
-      const localRepos = await api.getLocalRepositories()
-      const remoteRepos = await api.listRepositories()
+      const [localRepos, remoteRepos, localGroups, localMemberships, remoteGroups, remoteMemberships] =
+        await Promise.all([
+        api.getLocalRepositories(),
+        api.listRepositories(),
+        api.listLocalRepositoryGroups(),
+          api.listLocalRepositoryGroupMemberships(),
+          api.listRemoteRepositoryGroups(),
+          api.listRemoteRepositoryGroupMemberships()
+        ])
 
       localRepositories.value = [...localRepos].sort((a, b) =>
         a.alias.localeCompare(b.alias, 'zh-CN')
@@ -61,6 +89,10 @@ export const useBatchMergeRepositories = (
       remoteRepositories.value = [...remoteRepos].sort((a, b) =>
         a.alias.localeCompare(b.alias, 'zh-CN')
       )
+      localRepositoryGroups.value = [...localGroups]
+      localGroupMemberships.value = [...localMemberships]
+      remoteRepositoryGroups.value = [...remoteGroups]
+      remoteGroupMemberships.value = [...remoteMemberships]
 
       const urlEntries = await Promise.all(
         localRepositories.value.map(async (repo) => {
@@ -102,13 +134,82 @@ export const useBatchMergeRepositories = (
     remoteRepositories.value.find((r) => r.url === selectedSourceRepo.value)
   )
 
+  const repoGroupIdsByRepoId = computed(() => {
+    const map = new Map<string, Set<string>>()
+    localGroupMemberships.value.forEach((membership) => {
+      const set = map.get(membership.repositoryId) || new Set<string>()
+      set.add(membership.groupId)
+      map.set(membership.repositoryId, set)
+    })
+    return map
+  })
+
+  const remoteRepoGroupIdsByRepoId = computed(() => {
+    const map = new Map<string, Set<string>>()
+    remoteGroupMemberships.value.forEach((membership) => {
+      const set = map.get(membership.repositoryId) || new Set<string>()
+      set.add(membership.groupId)
+      map.set(membership.repositoryId, set)
+    })
+    return map
+  })
+
+  const localGroupFilterOptions = computed<LocalGroupFilterOption[]>(() => {
+    return [
+      { id: UNGROUPED_GROUP_FILTER_ID, name: '未分组' },
+      ...localRepositoryGroups.value.map((group) => ({ id: group.id, name: group.name }))
+    ]
+  })
+
+  const remoteGroupFilterOptions = computed<LocalGroupFilterOption[]>(() => {
+    return [
+      { id: UNGROUPED_GROUP_FILTER_ID, name: '未分组' },
+      ...remoteRepositoryGroups.value.map((group) => ({ id: group.id, name: group.name }))
+    ]
+  })
+
+  const matchesSelectedLocalGroups = (repo: RepositoryData): boolean => {
+    if (selectedLocalGroupIds.value.length === 0) {
+      return true
+    }
+
+    const repoId = repo.id || ''
+    const groupIds = repoGroupIdsByRepoId.value.get(repoId) || new Set<string>()
+    const selectedSet = new Set(selectedLocalGroupIds.value)
+
+    const matchesUngrouped = selectedSet.has(UNGROUPED_GROUP_FILTER_ID) && groupIds.size === 0
+    if (matchesUngrouped) {
+      return true
+    }
+
+    return Array.from(groupIds).some((groupId) => selectedSet.has(groupId))
+  }
+
+  const matchesSelectedRemoteGroups = (repo: RepositoryData): boolean => {
+    if (selectedRemoteGroupIds.value.length === 0) {
+      return true
+    }
+
+    const repoId = repo.id || ''
+    const groupIds = remoteRepoGroupIdsByRepoId.value.get(repoId) || new Set<string>()
+    const selectedSet = new Set(selectedRemoteGroupIds.value)
+
+    const matchesUngrouped = selectedSet.has(UNGROUPED_GROUP_FILTER_ID) && groupIds.size === 0
+    if (matchesUngrouped) {
+      return true
+    }
+
+    return Array.from(groupIds).some((groupId) => selectedSet.has(groupId))
+  }
+
   const targetRepos = computed(() =>
     localRepositories.value.filter((r) => selectedTargetRepos.value.has(r.url))
   )
 
   const filteredRemoteRepositories = computed(() =>
     remoteRepositories.value.filter((repo) =>
-      matchesSearchKeywords(repo.alias, searchRemoteRepoKeyword.value)
+      matchesSearchKeywords(repo.alias, searchRemoteRepoKeyword.value) &&
+      matchesSelectedRemoteGroups(repo)
     )
   )
 
@@ -116,7 +217,8 @@ export const useBatchMergeRepositories = (
     localRepositories.value.filter(
       (repo) =>
         repo.url !== selectedSourceRepo.value &&
-        matchesSearchKeywords(repo.alias, searchLocalRepoKeyword.value)
+        matchesSearchKeywords(repo.alias, searchLocalRepoKeyword.value) &&
+        matchesSelectedLocalGroups(repo)
     )
   )
 
@@ -147,8 +249,12 @@ export const useBatchMergeRepositories = (
     selectedTargetRepos,
     searchLocalRepoKeyword,
     searchLocalRepoInputValue,
+    selectedRemoteGroupIds,
+    remoteGroupFilterOptions,
     searchRemoteRepoKeyword,
     searchRemoteRepoInputValue,
+    selectedLocalGroupIds,
+    localGroupFilterOptions,
     loadRepositories,
     sourceRepo,
     targetRepos,

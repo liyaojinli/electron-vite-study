@@ -7,6 +7,20 @@ type RepositoryData = {
   local?: boolean
 }
 
+type RepositoryScope = 'remote' | 'local'
+
+type RepositoryGroupData = {
+  id: string
+  scope: RepositoryScope
+  name: string
+  isDefault: boolean
+}
+
+type RepositoryGroupMembershipData = {
+  groupId: string
+  repositoryId: string
+}
+
 class Repository {
   id: string
   url: string
@@ -79,4 +93,4 @@ class Repository {
 }
 
 export { Repository }
-export type { RepositoryData }
+export type { RepositoryData, RepositoryGroupData, RepositoryGroupMembershipData, RepositoryScope }

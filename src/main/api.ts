@@ -7,8 +7,22 @@ import { promisify } from 'util'
 import type { RepositoryData } from '../shared/repository'
 import type { MergeSessionResult, RevisionMergeState } from '../shared/merge'
 import {
+  assignLocalRepositoriesToGroup,
+  assignRemoteRepositoriesToGroup,
+  createLocalRepositoryGroup,
+  createRemoteRepositoryGroup,
   createRepository,
   insertRepository,
+  listLocalRepositoryGroupMemberships,
+  listLocalRepositoryGroups,
+  listRemoteRepositoryGroupMemberships,
+  listRemoteRepositoryGroups,
+  removeLocalRepositoryFromGroup,
+  removeRemoteRepositoryFromGroup,
+  updateLocalRepositoryGroup,
+  updateRemoteRepositoryGroup,
+  deleteLocalRepositoryGroup,
+  deleteRemoteRepositoryGroup,
   deleteRepository,
   deleteRepositoryByIdentity,
   listRepositories,
@@ -363,6 +377,49 @@ const execRemoteSvnCat = (
 
 // ========== API 定义区（只在这里添加新 API）==========
 export const apiHandlers = {
+  listRemoteRepositoryGroups: async () => {
+    return listRemoteRepositoryGroups()
+  },
+  listLocalRepositoryGroups: async () => {
+    return listLocalRepositoryGroups()
+  },
+  createRemoteRepositoryGroup: async (name: string) => {
+    return createRemoteRepositoryGroup(name)
+  },
+  createLocalRepositoryGroup: async (name: string) => {
+    return createLocalRepositoryGroup(name)
+  },
+  updateRemoteRepositoryGroup: async (groupId: string, name: string) => {
+    return updateRemoteRepositoryGroup(groupId, name)
+  },
+  updateLocalRepositoryGroup: async (groupId: string, name: string) => {
+    return updateLocalRepositoryGroup(groupId, name)
+  },
+  deleteRemoteRepositoryGroup: async (groupId: string) => {
+    return deleteRemoteRepositoryGroup(groupId)
+  },
+  deleteLocalRepositoryGroup: async (groupId: string) => {
+    return deleteLocalRepositoryGroup(groupId)
+  },
+  listRemoteRepositoryGroupMemberships: async () => {
+    return listRemoteRepositoryGroupMemberships()
+  },
+  listLocalRepositoryGroupMemberships: async () => {
+    return listLocalRepositoryGroupMemberships()
+  },
+  assignRemoteRepositoriesToGroup: async (groupId: string, repositoryIds: string[]) => {
+    return assignRemoteRepositoriesToGroup(groupId, repositoryIds)
+  },
+  assignLocalRepositoriesToGroup: async (groupId: string, repositoryIds: string[]) => {
+    return assignLocalRepositoriesToGroup(groupId, repositoryIds)
+  },
+  removeRemoteRepositoryFromGroup: async (groupId: string, repositoryId: string) => {
+    return removeRemoteRepositoryFromGroup(groupId, repositoryId)
+  },
+  removeLocalRepositoryFromGroup: async (groupId: string, repositoryId: string) => {
+    return removeLocalRepositoryFromGroup(groupId, repositoryId)
+  },
+
   // Remote Repository APIs
   listRepositories: async () => {
     return listRepositories()

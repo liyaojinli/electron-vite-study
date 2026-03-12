@@ -3,10 +3,18 @@ import { execFile } from 'child_process'
 import { randomUUID } from 'crypto'
 import fs from 'fs/promises'
 import path from 'path'
-import { Repository, type RepositoryData } from '../../shared/repository'
+import {
+  Repository,
+  type RepositoryData,
+  type RepositoryGroupData,
+  type RepositoryGroupMembershipData,
+  type RepositoryScope
+} from '../../shared/repository'
 import {
   ensureRepositoryDbSchema,
   getRepositoryDb,
+  repositoryGroupMembershipTableName,
+  repositoryGroupTableName,
   repositoryMigrationTableName,
   repositoryTableName
 } from './db'
@@ -23,7 +31,21 @@ type RepositoryRow = {
   sort_order: number
 }
 
+type RepositoryGroupRow = {
+  id: string
+  scope: RepositoryScope
+  name: string
+  is_default: number
+}
+
+type RepositoryGroupMembershipRow = {
+  group_id: string
+  repository_id: string
+}
+
 type MigrationScope = 'remote' | 'local'
+
+const ungroupedName = '未分组'
 
 let initializePromise: Promise<void> | null = null
 
@@ -58,6 +80,10 @@ const toLocalFlag = (local: boolean): number => {
   return local ? 1 : 0
 }
 
+const toScope = (local: boolean): RepositoryScope => {
+  return local ? 'local' : 'remote'
+}
+
 const rowToRepository = (row: RepositoryRow): Repository => {
   return Repository.fromJSON({
     id: row.id,
@@ -67,6 +93,15 @@ const rowToRepository = (row: RepositoryRow): Repository => {
     alias: row.alias,
     local: row.local === 1
   })
+}
+
+const groupRowToData = (row: RepositoryGroupRow): RepositoryGroupData => {
+  return {
+    id: row.id,
+    scope: row.scope,
+    name: row.name,
+    isDefault: row.is_default === 1
+  }
 }
 
 const resolveIdentityIndex = (
@@ -380,6 +415,292 @@ const deleteByScopeAndId = async (local: boolean, id: string): Promise<Repositor
   return listDataByScope(local)
 }
 
+const listRepositoryGroupsByScope = async (local: boolean): Promise<RepositoryGroupData[]> => {
+  await ensureInitialized()
+  const database = getRepositoryDb()
+  const rows = database
+    .prepare(
+      `SELECT id, scope, name, is_default
+       FROM ${repositoryGroupTableName}
+       WHERE scope = ? AND is_default = 0
+       ORDER BY name ASC`
+    )
+    .all(toScope(local)) as RepositoryGroupRow[]
+  return rows.map(groupRowToData)
+}
+
+const createRepositoryGroupByScope = async (
+  local: boolean,
+  name: string
+): Promise<RepositoryGroupData[]> => {
+  await ensureInitialized()
+  const groupName = normalizeString(name).trim()
+  if (!groupName) {
+    throw new Error('分组名不能为空。')
+  }
+  if (groupName === ungroupedName) {
+    throw new Error('未分组为系统保留名称。')
+  }
+
+  const database = getRepositoryDb()
+  database
+    .prepare(
+      `INSERT INTO ${repositoryGroupTableName}
+       (id, scope, name, is_default, created_at, updated_at)
+       VALUES (?, ?, ?, 0, ?, ?)`
+    )
+    .run(createRepositoryId(), toScope(local), groupName, nowIso(), nowIso())
+
+  return listRepositoryGroupsByScope(local)
+}
+
+const updateRepositoryGroupByScope = async (
+  local: boolean,
+  groupId: string,
+  name: string
+): Promise<RepositoryGroupData[]> => {
+  await ensureInitialized()
+  const groupName = normalizeString(name).trim()
+  if (!groupName) {
+    throw new Error('分组名不能为空。')
+  }
+  if (groupName === ungroupedName) {
+    throw new Error('未分组为系统保留名称。')
+  }
+
+  const database = getRepositoryDb()
+  const target = database
+    .prepare(
+      `SELECT id, is_default
+       FROM ${repositoryGroupTableName}
+       WHERE id = ? AND scope = ?`
+    )
+    .get(groupId, toScope(local)) as { id: string; is_default: number } | undefined
+
+  if (!target) {
+    throw new Error('分组不存在。')
+  }
+  if (target.is_default === 1) {
+    throw new Error('系统分组不允许重命名。')
+  }
+
+  database
+    .prepare(
+      `UPDATE ${repositoryGroupTableName}
+       SET name = ?, updated_at = ?
+       WHERE id = ? AND scope = ?`
+    )
+    .run(groupName, nowIso(), groupId, toScope(local))
+
+  return listRepositoryGroupsByScope(local)
+}
+
+const deleteRepositoryGroupByScope = async (
+  local: boolean,
+  groupId: string
+): Promise<RepositoryGroupData[]> => {
+  await ensureInitialized()
+  const database = getRepositoryDb()
+
+  const target = database
+    .prepare(
+      `SELECT id, is_default
+       FROM ${repositoryGroupTableName}
+       WHERE id = ? AND scope = ?`
+    )
+    .get(groupId, toScope(local)) as { id: string; is_default: number } | undefined
+
+  if (!target) {
+    throw new Error('分组不存在。')
+  }
+  if (target.is_default === 1) {
+    throw new Error('系统分组不允许删除。')
+  }
+
+  const execute = database.transaction(() => {
+    database
+      .prepare(`DELETE FROM ${repositoryGroupTableName} WHERE id = ? AND scope = ?`)
+      .run(groupId, toScope(local))
+  })
+
+  execute()
+  return listRepositoryGroupsByScope(local)
+}
+
+const listRepositoryGroupMembershipsByScope = async (
+  local: boolean
+): Promise<RepositoryGroupMembershipData[]> => {
+  await ensureInitialized()
+  const database = getRepositoryDb()
+  const rows = database
+    .prepare(
+      `SELECT m.group_id, m.repository_id
+       FROM ${repositoryGroupMembershipTableName} m
+       INNER JOIN ${repositoryGroupTableName} g ON g.id = m.group_id
+       INNER JOIN ${repositoryTableName} r ON r.id = m.repository_id
+       WHERE g.scope = ? AND g.is_default = 0 AND r.local = ?`
+    )
+    .all(toScope(local), toLocalFlag(local)) as RepositoryGroupMembershipRow[]
+
+  return rows.map((row) => ({
+    groupId: row.group_id,
+    repositoryId: row.repository_id
+  }))
+}
+
+const assignRepositoriesToGroupByScope = async (
+  local: boolean,
+  groupId: string,
+  repositoryIds: string[]
+): Promise<RepositoryGroupMembershipData[]> => {
+  await ensureInitialized()
+  const database = getRepositoryDb()
+
+  const group = database
+    .prepare(
+      `SELECT id
+       FROM ${repositoryGroupTableName}
+       WHERE id = ? AND scope = ?`
+    )
+    .get(groupId, toScope(local)) as { id: string } | undefined
+
+  if (!group) {
+    throw new Error('目标分组不存在。')
+  }
+
+  const cleanedIds = Array.from(
+    new Set(repositoryIds.map((id) => normalizeString(id).trim()).filter(Boolean))
+  )
+  if (cleanedIds.length === 0) {
+    return listRepositoryGroupMembershipsByScope(local)
+  }
+
+  const execute = database.transaction((ids: string[]) => {
+    const insert = database.prepare(
+      `INSERT OR IGNORE INTO ${repositoryGroupMembershipTableName}
+       (group_id, repository_id, created_at)
+       VALUES (?, ?, ?)`
+    )
+
+    const verifyRepo = database.prepare(
+      `SELECT id FROM ${repositoryTableName} WHERE id = ? AND local = ?`
+    )
+
+    ids.forEach((repositoryId) => {
+      const exists = verifyRepo.get(repositoryId, toLocalFlag(local)) as { id: string } | undefined
+      if (exists) {
+        insert.run(groupId, repositoryId, nowIso())
+      }
+    })
+  })
+
+  execute(cleanedIds)
+  return listRepositoryGroupMembershipsByScope(local)
+}
+
+const removeRepositoryFromGroupByScope = async (
+  local: boolean,
+  groupId: string,
+  repositoryId: string
+): Promise<RepositoryGroupMembershipData[]> => {
+  await ensureInitialized()
+  const database = getRepositoryDb()
+  const group = database
+    .prepare(
+      `SELECT id
+       FROM ${repositoryGroupTableName}
+       WHERE id = ? AND scope = ?`
+    )
+    .get(groupId, toScope(local)) as { id: string } | undefined
+
+  if (!group) {
+    throw new Error('分组不存在。')
+  }
+
+  database
+    .prepare(
+      `DELETE FROM ${repositoryGroupMembershipTableName}
+       WHERE group_id = ? AND repository_id = ?`
+    )
+    .run(groupId, repositoryId)
+
+  return listRepositoryGroupMembershipsByScope(local)
+}
+
+const listRemoteRepositoryGroups = async (): Promise<RepositoryGroupData[]> => {
+  return listRepositoryGroupsByScope(false)
+}
+
+const listLocalRepositoryGroups = async (): Promise<RepositoryGroupData[]> => {
+  return listRepositoryGroupsByScope(true)
+}
+
+const createRemoteRepositoryGroup = async (name: string): Promise<RepositoryGroupData[]> => {
+  return createRepositoryGroupByScope(false, name)
+}
+
+const createLocalRepositoryGroup = async (name: string): Promise<RepositoryGroupData[]> => {
+  return createRepositoryGroupByScope(true, name)
+}
+
+const updateRemoteRepositoryGroup = async (
+  groupId: string,
+  name: string
+): Promise<RepositoryGroupData[]> => {
+  return updateRepositoryGroupByScope(false, groupId, name)
+}
+
+const updateLocalRepositoryGroup = async (
+  groupId: string,
+  name: string
+): Promise<RepositoryGroupData[]> => {
+  return updateRepositoryGroupByScope(true, groupId, name)
+}
+
+const deleteRemoteRepositoryGroup = async (groupId: string): Promise<RepositoryGroupData[]> => {
+  return deleteRepositoryGroupByScope(false, groupId)
+}
+
+const deleteLocalRepositoryGroup = async (groupId: string): Promise<RepositoryGroupData[]> => {
+  return deleteRepositoryGroupByScope(true, groupId)
+}
+
+const listRemoteRepositoryGroupMemberships = async (): Promise<RepositoryGroupMembershipData[]> => {
+  return listRepositoryGroupMembershipsByScope(false)
+}
+
+const listLocalRepositoryGroupMemberships = async (): Promise<RepositoryGroupMembershipData[]> => {
+  return listRepositoryGroupMembershipsByScope(true)
+}
+
+const assignRemoteRepositoriesToGroup = async (
+  groupId: string,
+  repositoryIds: string[]
+): Promise<RepositoryGroupMembershipData[]> => {
+  return assignRepositoriesToGroupByScope(false, groupId, repositoryIds)
+}
+
+const assignLocalRepositoriesToGroup = async (
+  groupId: string,
+  repositoryIds: string[]
+): Promise<RepositoryGroupMembershipData[]> => {
+  return assignRepositoriesToGroupByScope(true, groupId, repositoryIds)
+}
+
+const removeRemoteRepositoryFromGroup = async (
+  groupId: string,
+  repositoryId: string
+): Promise<RepositoryGroupMembershipData[]> => {
+  return removeRepositoryFromGroupByScope(false, groupId, repositoryId)
+}
+
+const removeLocalRepositoryFromGroup = async (
+  groupId: string,
+  repositoryId: string
+): Promise<RepositoryGroupMembershipData[]> => {
+  return removeRepositoryFromGroupByScope(true, groupId, repositoryId)
+}
+
 // Remote Repository Operations
 const listRepositories = async (): Promise<RepositoryData[]> => {
   return listDataByScope(false)
@@ -567,6 +888,20 @@ const verifyLocalRepository = async (
 }
 
 export {
+  listRemoteRepositoryGroups,
+  listLocalRepositoryGroups,
+  createRemoteRepositoryGroup,
+  createLocalRepositoryGroup,
+  updateRemoteRepositoryGroup,
+  updateLocalRepositoryGroup,
+  deleteRemoteRepositoryGroup,
+  deleteLocalRepositoryGroup,
+  listRemoteRepositoryGroupMemberships,
+  listLocalRepositoryGroupMemberships,
+  assignRemoteRepositoriesToGroup,
+  assignLocalRepositoriesToGroup,
+  removeRemoteRepositoryFromGroup,
+  removeLocalRepositoryFromGroup,
   listRepositories,
   createRepository,
   insertRepository,
