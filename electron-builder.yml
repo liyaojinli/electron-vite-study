@@ -62,4 +62,4 @@ publish:
   # - *.blockmap（差分更新文件）
   # 推荐使用 HTTPS 协议以确保安全性
   # 示例：url: https://your-domain.com/updates/win
-  url: http://192.168.163.96:8888/auto-updates/
+  url: http://yss.util.svn.update.com:8888/auto-updates/

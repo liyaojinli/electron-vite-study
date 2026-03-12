@@ -1,5 +1,6 @@
-import { computed, onMounted, ref, watch, type Ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch, type Ref } from 'vue'
 import type { RepositoryData } from '../../../shared/repository'
+import { onRepositoriesChanged } from '../utils/repositoryEvents'
 
 const matchesSearchKeywords = (alias: string, keywords: string): boolean => {
   if (!keywords.trim()) return true
@@ -47,6 +48,7 @@ export const useBatchMergeRepositories = (
   const searchLocalRepoInputValue = ref<string>('')
   const searchRemoteRepoKeyword = ref<string>('')
   const searchRemoteRepoInputValue = ref<string>('')
+  let stopRepositoryChangeListener: (() => void) | null = null
 
   const loadRepositories = async (): Promise<void> => {
     try {
@@ -77,7 +79,17 @@ export const useBatchMergeRepositories = (
   }
 
   onMounted(async () => {
+    stopRepositoryChangeListener = onRepositoriesChanged(async () => {
+      await loadRepositories()
+    })
     await loadRepositories()
+  })
+
+  onUnmounted(() => {
+    if (stopRepositoryChangeListener) {
+      stopRepositoryChangeListener()
+      stopRepositoryChangeListener = null
+    }
   })
 
   watch(isActive, async (active, wasActive) => {

@@ -10,14 +10,18 @@ import {
   createRepository,
   insertRepository,
   deleteRepository,
+  deleteRepositoryByIdentity,
   listRepositories,
   updateRepository,
+  updateRepositoryByIdentity,
   verifyRepository,
   createLocalRepository,
   insertLocalRepository,
   deleteLocalRepository,
+  deleteLocalRepositoryByIdentity,
   listLocalRepositories,
   updateLocalRepository,
+  updateLocalRepositoryByIdentity,
   verifyLocalRepository
 } from './repository/repository'
 
@@ -372,8 +376,14 @@ export const apiHandlers = {
   updateRepository: async (index: number, repo: RepositoryData) => {
     return updateRepository(index, repo)
   },
+  updateRepositoryByIdentity: async (repo: RepositoryData) => {
+    return updateRepositoryByIdentity(repo)
+  },
   deleteRepository: async (index: number) => {
     return deleteRepository(index)
+  },
+  deleteRepositoryByIdentity: async (identity: Pick<RepositoryData, 'id' | 'url'>) => {
+    return deleteRepositoryByIdentity(identity)
   },
   verifyRepository: async (repo: RepositoryData) => {
     return verifyRepository(repo)
@@ -392,8 +402,14 @@ export const apiHandlers = {
   updateLocalRepository: async (index: number, repo: RepositoryData) => {
     return updateLocalRepository(index, repo)
   },
+  updateLocalRepositoryByIdentity: async (repo: RepositoryData) => {
+    return updateLocalRepositoryByIdentity(repo)
+  },
   deleteLocalRepository: async (index: number) => {
     return deleteLocalRepository(index)
+  },
+  deleteLocalRepositoryByIdentity: async (identity: Pick<RepositoryData, 'id' | 'url'>) => {
+    return deleteLocalRepositoryByIdentity(identity)
   },
   verifyLocalRepository: async (repo: RepositoryData) => {
     return verifyLocalRepository(repo)

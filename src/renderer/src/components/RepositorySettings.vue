@@ -4,11 +4,15 @@ import { Repository, type RepositoryData } from '../../../shared/repository'
 import { Plus, Eye, EyeOff, Check, Trash2, ScrollText } from 'lucide-vue-next'
 import SvnRemoteLogViewer from './SvnRemoteLogViewer.vue'
 import SvnDiffViewerReadOnly from './SvnDiffViewerReadOnly.vue'
+import { useRepositoryChangeNotifier } from '../composables/useRepositoryChangeNotifier'
+import { useRepositoryRowKey } from '../composables/useStableRowKey'
 
 const passwordVisibleIndices = ref(new Set<number>())
 const repositories = ref<Repository[]>([])
 const baselineData = ref<Array<RepositoryData | null>>([])
 const newRows = ref(new Set<Repository>())
+const getRowKey = useRepositoryRowKey<Repository>()
+const notifyRepositoryChanged = useRepositoryChangeNotifier('remote')
 const showRemoteLogViewer = ref(false)
 const remoteLogRepoUrl = ref('')
 const remoteLogTitle = ref('远程 SVN 日志')
@@ -45,7 +49,7 @@ const loadRepositories = async (): Promise<void> => {
 }
 
 const addRepositoryAfter = (index: number): void => {
-  const repo = new Repository('', '', '', '')
+  const repo = new Repository('', '', '', '', '')
   repositories.value.splice(index + 1, 0, repo)
   baselineData.value.splice(index + 1, 0, null)
   newRows.value.add(repo)
@@ -53,7 +57,7 @@ const addRepositoryAfter = (index: number): void => {
 }
 
 const addFirstRepository = (): void => {
-  const repo = new Repository('', '', '', '')
+  const repo = new Repository('', '', '', '', '')
   repositories.value.splice(0, 0, repo)
   baselineData.value.splice(0, 0, null)
   newRows.value.add(repo)
@@ -93,11 +97,7 @@ const saveRepository = async (index: number): Promise<void> => {
         .filter((r) => !newRows.value.has(r)).length
       await window.api.insertRepository(savedRowsBeforeIndex, payload)
     } else {
-      // 对于更新操作，也需要计算正确的索引：该行之前有多少条已保存的行
-      const savedRowsBeforeIndex = repositories.value
-        .slice(0, index)
-        .filter((r) => !newRows.value.has(r)).length
-      await window.api.updateRepository(savedRowsBeforeIndex, payload)
+      await window.api.updateRepositoryByIdentity(payload)
     }
 
     // 不要刷新整个列表，只更新当前行的 baseline 数据
@@ -106,6 +106,7 @@ const saveRepository = async (index: number): Promise<void> => {
     if (newRows.value.has(repo)) {
       newRows.value.delete(repo)
     }
+    notifyRepositoryChanged()
   } catch (error) {
     console.error('Failed to save repository:', error)
   }
@@ -120,17 +121,15 @@ const removeRepository = async (index: number): Promise<void> => {
       baselineData.value.splice(index, 1)
       newRows.value.delete(repo)
       resetPasswordVisibility()
+      notifyRepositoryChanged()
     } else {
-      // 已保存的行，调用 API 删除
-      // 计算正确的删除位置：该行之前有多少条已保存的行
-      const savedRowsBeforeIndex = repositories.value
-        .slice(0, index)
-        .filter((r) => !newRows.value.has(r)).length
-      await window.api.deleteRepository(savedRowsBeforeIndex)
+      // 已保存的行，按唯一身份删除（id 优先，url 兜底）
+      await window.api.deleteRepositoryByIdentity({ id: repo.id, url: repo.url })
       // 不要刷新整个列表，只从当前列表中移除这一行
       repositories.value.splice(index, 1)
       baselineData.value.splice(index, 1)
       resetPasswordVisibility()
+      notifyRepositoryChanged()
     }
   } catch (error) {
     console.error('Failed to remove repository:', error)
@@ -218,7 +217,7 @@ onMounted(() => {
               </button>
             </div>
           </div>
-          <div v-for="(repo, index) in repositories" :key="index" class="repo-row">
+          <div v-for="(repo, index) in repositories" :key="getRowKey(repo)" class="repo-row">
             <div class="repo-cell">
               <input v-model="repo.alias" class="app-input" type="text" placeholder="仓库别名" />
             </div>
