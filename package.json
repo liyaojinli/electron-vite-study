@@ -28,12 +28,14 @@
     "build:linux": "npm run build && electron-builder --linux",
     "build:linux:fast": "npm run build:fast && electron-builder --linux",
     "publish:local": "./publish-local.sh",
-    "verify:local": "./verify-local-setup.sh"
+    "verify:local": "./verify-local-setup.sh",
+    "rebuild:native": "electron-builder install-app-deps"
   },
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
     "@headlessui/vue": "^1.7.23",
+    "better-sqlite3": "^12.6.2",
     "diff2html": "^3.4.56",
     "electron-updater": "^6.8.3",
     "element-plus": "^2.13.2",
@@ -45,6 +47,7 @@
     "@electron-toolkit/eslint-config-ts": "^3.1.0",
     "@electron-toolkit/tsconfig": "^2.0.0",
     "@tailwindcss/vite": "^4.1.0",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.19.1",
     "@vitejs/plugin-vue": "^6.0.2",
     "@vitest/ui": "^3.2.4",

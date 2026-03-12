@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { Repository, type RepositoryData } from '../../../shared/repository'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Check, Trash2, FolderOpen, ScrollText } from 'lucide-vue-next'
 import SvnRemoteLogViewer from './SvnRemoteLogViewer.vue'
 import SvnDiffViewerReadOnly from './SvnDiffViewerReadOnly.vue'
@@ -90,7 +91,7 @@ const saveRepository = async (index: number): Promise<void> => {
     })
 
     if (duplicateIndex !== -1) {
-      alert(
+      ElMessage.warning(
         `本地路径已存在于「${repositories.value[duplicateIndex].alias || '未命名'}」仓库中，不允许重复添加。`
       )
       return
@@ -98,7 +99,7 @@ const saveRepository = async (index: number): Promise<void> => {
 
     const verifyResult = await api.verifyLocalRepository(payload)
     if (!verifyResult.ok) {
-      alert(verifyResult.message || '本地路径验证失败。')
+      ElMessage.error(verifyResult.message || '本地路径验证失败。')
       return
     }
     // 调用 API 保存，但不使用返回结果刷新整个列表
@@ -148,6 +149,35 @@ const removeRepository = async (index: number): Promise<void> => {
   }
 }
 
+const requestRemoveRepository = async (index: number): Promise<void> => {
+  const repo = repositories.value[index]
+  if (!repo) {
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      `确定要删除「${repo.alias || repo.url || '该仓库'}」吗？`,
+      '确认删除本地仓库',
+      {
+        type: 'warning',
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+        confirmButtonClass: 'el-button--danger'
+      }
+    )
+
+    const currentIndex = repositories.value.indexOf(repo)
+    if (currentIndex === -1) {
+      return
+    }
+
+    await removeRepository(currentIndex)
+  } catch {
+    // User cancelled.
+  }
+}
+
 const isDirty = (index: number): boolean => {
   const current = repositories.value[index]?.toJSON()
   const baseline = baselineData.value[index]
@@ -170,14 +200,14 @@ const selectDirectoryForRepo = async (index: number): Promise<void> => {
 
 const viewRemoteLogsByLocalRepo = async (repo: Repository): Promise<void> => {
   if (!repo.url) {
-    alert('请先填写本地仓库路径。')
+    ElMessage.warning('请先填写本地仓库路径。')
     return
   }
 
   try {
     const remoteResult = await api.getSvnRemoteUrl(repo.url)
     if (!remoteResult.success || !remoteResult.url) {
-      alert(remoteResult.message || '无法获取远程仓库地址。')
+      ElMessage.error(remoteResult.message || '无法获取远程仓库地址。')
       return
     }
 
@@ -186,7 +216,7 @@ const viewRemoteLogsByLocalRepo = async (repo: Repository): Promise<void> => {
     showRemoteLogViewer.value = true
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : '无法获取远程仓库地址'
-    alert(errorMsg)
+    ElMessage.error(errorMsg)
   }
 }
 
@@ -296,7 +326,7 @@ onMounted(() => {
                   type="button"
                   class="repo-button is-danger icon-only"
                   aria-label="删除"
-                  @click="removeRepository(index)"
+                  @click="requestRemoveRepository(index)"
                 >
                   <Trash2 :size="18" :stroke-width="2" />
                 </button>
@@ -324,6 +354,7 @@ onMounted(() => {
       :target-revision="diffViewerReadOnlyTargetRevision"
       @close="handleCloseDiffViewerReadOnly"
     />
+
   </section>
 </template>
 <style scoped>
