@@ -13,6 +13,7 @@ import {
 import {
   ensureRepositoryDbSchema,
   getRepositoryDb,
+  initializeRepositoryDb,
   repositoryGroupMembershipTableName,
   repositoryGroupTableName,
   repositoryMigrationTableName,
@@ -197,25 +198,43 @@ const migrateScopeFromJson = async (scope: MigrationScope, local: boolean): Prom
     const legacyRepos = await readRepositoriesFromLegacyJson(local)
     if (legacyRepos.length > 0) {
       const database = getRepositoryDb()
+      const existingIds = new Set(
+        (
+          database.prepare(`SELECT id FROM ${repositoryTableName}`).all() as Array<{ id: string }>
+        ).map((row) => row.id)
+      )
       const insertStmt = database.prepare(
         `INSERT INTO ${repositoryTableName}
         (id, url, username, password, alias, local, sort_order, created_at, updated_at)
-        VALUES (@id, @url, @username, @password, @alias, @local, @sort_order, @created_at, @updated_at)`
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
 
       const executeInsert = database.transaction((repos: Repository[]) => {
         repos.forEach((repo, index) => {
-          insertStmt.run({
-            id: repo.id || createRepositoryId(),
-            url: repo.url,
-            username: repo.username,
-            password: repo.password,
-            alias: repo.alias,
-            local: toLocalFlag(local),
-            sort_order: index,
-            created_at: nowIso(),
-            updated_at: nowIso()
-          })
+          let nextId = normalizeString(repo.id).trim()
+          if (!nextId || existingIds.has(nextId)) {
+            do {
+              nextId = createRepositoryId()
+            } while (existingIds.has(nextId))
+          }
+          existingIds.add(nextId)
+
+          const url = normalizeString(repo.url).trim()
+          if (!url) {
+            return
+          }
+
+          insertStmt.run(
+            nextId,
+            url,
+            normalizeString(repo.username),
+            normalizeString(repo.password),
+            normalizeString(repo.alias),
+            toLocalFlag(local),
+            index,
+            nowIso(),
+            nowIso()
+          )
         })
       })
 
@@ -227,6 +246,7 @@ const migrateScopeFromJson = async (scope: MigrationScope, local: boolean): Prom
 }
 
 const initializePersistence = async (): Promise<void> => {
+  await initializeRepositoryDb()
   ensureRepositoryDbSchema()
   await migrateScopeFromJson('remote', false)
   await migrateScopeFromJson('local', true)

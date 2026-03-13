@@ -212,6 +212,12 @@ build_mac() {
 # 构建 Windows 版本
 build_win() {
     print_header "构建 Windows 应用"
+
+    if [[ "$OSTYPE" != "msys"* && "$OSTYPE" != "cygwin"* && "$OSTYPE" != "win32"* ]]; then
+        print_error "当前环境不是 Windows，无法可靠构建包含 better-sqlite3 的 Windows 安装包"
+        print_error "请在 Windows 机器上执行 build-release.bat，或使用 windows-latest CI 构建"
+        return 1
+    fi
     
     print_info "开始构建 Windows 版本 (x64)..."
     print_info "这可能需要几分钟时间..."

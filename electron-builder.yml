@@ -49,7 +49,7 @@ linux:
   category: Utility
 appImage:
   artifactName: ${name}-${version}.${ext}
-npmRebuild: false
+npmRebuild: true
 # 发布说明配置
 releaseInfo:
   releaseNotes: ''

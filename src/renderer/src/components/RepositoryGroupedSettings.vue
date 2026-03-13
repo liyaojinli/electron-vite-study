@@ -2,12 +2,13 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
+  PackagePlus,
   Check,
   Folder,
   FolderOpen,
+  FolderPlus,
   Link2,
   Pencil,
-  Plus,
   Scissors,
   Share2,
   ScrollText,
@@ -1080,7 +1081,16 @@ onMounted(async () => {
                   title="新增分组"
                   @click="createGroup"
                 >
-                  <Plus :size="14" />
+                  <FolderPlus :size="14" />
+                </button>
+                <button
+                  type="button"
+                  class="repo-button is-neutral icon-only"
+                  aria-label="新增仓库"
+                  title="新增仓库"
+                  @click="addDraftRepository(row.group.id)"
+                >
+                  <PackagePlus :size="14" />
                 </button>
                 <button
                   v-if="!row.isUngrouped"
@@ -1126,15 +1136,6 @@ onMounted(async () => {
             </div>
 
             <div v-else class="row-actions">
-              <button
-                type="button"
-                class="repo-button is-primary icon-only"
-                aria-label="新增仓库"
-                title="新增仓库"
-                @click="addDraftRepository(row.groupId, row.repo)"
-              >
-                <Plus :size="14" />
-              </button>
               <button
                 type="button"
                 class="repo-button is-primary icon-only"
