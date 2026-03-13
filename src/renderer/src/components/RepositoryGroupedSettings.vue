@@ -9,6 +9,8 @@ import {
   FolderPlus,
   Link2,
   Pencil,
+  Plus,
+  Minus,
   Scissors,
   Share2,
   ScrollText,
@@ -119,6 +121,7 @@ const editingGroupName = ref('')
 const showRemoteLogViewer = ref(false)
 const remoteLogRepoUrl = ref('')
 const remoteLogTitle = ref('远程 SVN 日志')
+const hasInitializedExpandedGroups = ref(false)
 let draftSeed = 0
 let dragPreviewElement: HTMLDivElement | null = null
 
@@ -245,12 +248,49 @@ const treeRows = computed<GroupRow[]>(() => {
 watch(
   treeRows,
   (rows) => {
-    expandedGroupRowIds.value = new Set(rows.map((row) => row.rowId))
+    const nextRowIds = rows.map((row) => row.rowId)
+    if (!hasInitializedExpandedGroups.value) {
+      expandedGroupRowIds.value = new Set()
+      hasInitializedExpandedGroups.value = true
+      return
+    }
+
+    const nextExpanded = new Set<string>()
+    nextRowIds.forEach((rowId) => {
+      if (expandedGroupRowIds.value.has(rowId)) {
+        nextExpanded.add(rowId)
+      }
+    })
+    expandedGroupRowIds.value = nextExpanded
   },
   { immediate: true }
 )
 
 const expandRowKeys = computed(() => Array.from(expandedGroupRowIds.value))
+const allGroupsExpanded = computed(() => {
+  if (treeRows.value.length === 0) {
+    return false
+  }
+
+  return treeRows.value.every((row) => expandedGroupRowIds.value.has(row.rowId))
+})
+
+const expandAllGroups = (): void => {
+  expandedGroupRowIds.value = new Set(treeRows.value.map((row) => row.rowId))
+}
+
+const collapseAllGroups = (): void => {
+  expandedGroupRowIds.value.clear()
+}
+
+const toggleAllGroups = (): void => {
+  if (allGroupsExpanded.value) {
+    collapseAllGroups()
+    return
+  }
+
+  expandAllGroups()
+}
 
 const isGroupExpanded = (rowId: string): boolean => {
   return expandedGroupRowIds.value.has(rowId)
@@ -326,6 +366,20 @@ const addDraftRepository = (
     local: isLocalMode.value,
     targetGroupId
   })
+}
+
+const getLastRepositoryInGroup = (targetGroupId: string): UiRepository | undefined => {
+  const groupRow = treeRows.value.find((row) => row.group.id === targetGroupId)
+  if (!groupRow || groupRow.children.length === 0) {
+    return undefined
+  }
+
+  const lastRepoRow = groupRow.children[groupRow.children.length - 1]
+  return lastRepoRow?.repo
+}
+
+const addDraftRepositoryForGroup = (targetGroupId: string = UNGROUPED_GROUP_ID): void => {
+  addDraftRepository(targetGroupId, getLastRepositoryInGroup(targetGroupId))
 }
 
 const removeDraftRepository = (repoId: string): void => {
@@ -936,7 +990,24 @@ onMounted(async () => {
         @row-click="onTableRowClick"
         @expand-change="onExpandChange"
       >
-        <el-table-column label="分组 / 仓库" :min-width="groupColumnMinWidth">
+        <el-table-column :min-width="groupColumnMinWidth">
+          <template #header>
+            <div class="group-column-header">
+              <span>分组 / 仓库</span>
+              <div class="group-column-header-actions">
+                <button
+                  type="button"
+                  class="repo-button is-neutral icon-only"
+                  :aria-label="allGroupsExpanded ? '折叠全部' : '展开全部'"
+                  :title="allGroupsExpanded ? '折叠全部' : '展开全部'"
+                  @click="toggleAllGroups"
+                >
+                  <Minus v-if="allGroupsExpanded" :size="8" />
+                  <Plus v-else :size="8" />
+                </button>
+              </div>
+            </div>
+          </template>
           <template #default="{ row }">
             <div
               v-if="row.kind === 'group'"
@@ -1088,7 +1159,7 @@ onMounted(async () => {
                   class="repo-button is-neutral icon-only"
                   aria-label="新增仓库"
                   title="新增仓库"
-                  @click="addDraftRepository(row.group.id)"
+                  @click="addDraftRepositoryForGroup(row.group.id)"
                 >
                   <PackagePlus :size="14" />
                 </button>
@@ -1192,6 +1263,27 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+.group-column-header {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 8px;
+}
+
+.group-column-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+}
+
+.group-column-header-actions :deep(.repo-button) {
+  min-height: 8px;
+  min-width: 8px;
+  padding: 0;
+  border-radius: 4px;
+}
+
 .grouped-body {
   padding-top: 6px;
 }
