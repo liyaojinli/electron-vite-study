@@ -53,6 +53,17 @@ export const getDisplayEntries = (result: MergeSessionResult): string[] => {
   return result.onlyFiles || result.files || []
 }
 
+export const getTrackedFilePaths = (result: MergeSessionResult): string[] => {
+  const entries = result.trackedFiles || result.onlyFiles || result.files || []
+  if (entries.length === 0 || !result.targetRepoPath) return []
+
+  const filePaths = entries
+    .map((fileEntry) => parseMergeFilePath(fileEntry, result.targetRepoPath))
+    .filter((filePath) => isCommitableRelativePath(filePath))
+
+  return Array.from(new Set(filePaths))
+}
+
 export const isRevisionConflictResolved = (
   revision: RevisionMergeState,
   repoPath: string,

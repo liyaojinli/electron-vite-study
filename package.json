@@ -1,6 +1,6 @@
 {
   "name": "svn-merge-util",
-  "version": "1.0.30",
+  "version": "1.0.31",
   "description": "SVN batch merge utility with Vue and TypeScript",
   "main": "./out/main/index.js",
   "author": "example.com",

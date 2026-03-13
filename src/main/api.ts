@@ -279,6 +279,29 @@ const parseSvnTreeConflictCount = (output: string): number => {
   return Number.isNaN(count) ? 0 : count
 }
 
+const parseSvnStatusOutput = (output: string): Array<{ status: string; path: string }> => {
+  const lines = output.split(/\r?\n/)
+  const files: Array<{ status: string; path: string }> = []
+
+  for (const line of lines) {
+    if (!line || line.trim() === '') continue
+
+    const status = line[0]
+    const filePath = line.substring(8).trim()
+
+    console.log(`[getSvnStatus] Parsed line: status='${status}' path='${filePath}'`)
+
+    if (['M', 'A', 'D', 'R', 'C', 'X', '?', '!'].includes(status) && filePath) {
+      files.push({
+        status,
+        path: filePath.replace(/\\/g, '/')
+      })
+    }
+  }
+
+  return files
+}
+
 const normalizeRemotePathPart = (value: string): string => {
   return value.replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '')
 }
@@ -627,36 +650,64 @@ export const apiHandlers = {
   },
 
   getSvnStatus: async (
-    repoPath: string
+    repoPath: string,
+    filePaths?: string[]
   ): Promise<{ files: Array<{ status: string; path: string }>; message: string }> => {
     try {
-      const cmd = `svn status "${repoPath}"`
-      console.log('[getSvnStatus] Executing:', cmd)
-      const output = execSync(cmd, { encoding: 'utf-8' })
-      console.log('[getSvnStatus] Output:', output)
-
-      const lines = output.split(/\r?\n/)
       const files: Array<{ status: string; path: string }> = []
 
-      for (const line of lines) {
-        // Skip empty lines
-        if (!line || line.trim() === '') continue
+      if (filePaths && filePaths.length > 0) {
+        const uniquePaths = Array.from(
+          new Set(
+            filePaths
+              .map((filePath) => filePath.trim())
+              .filter((filePath) => filePath !== '' && filePath !== '.' && filePath !== './')
+          )
+        )
 
-        // SVN status format: "M       filename"
-        // First character is the status code
-        // Characters 1-8 are spaces (usually 7 spaces)
-        // Starting from character 8 is the filename
-        const status = line[0]
-        const filePath = line.substring(8).trim()
+        for (const filePath of uniquePaths) {
+          const relativePath = path.isAbsolute(filePath)
+            ? path.relative(repoPath, filePath)
+            : filePath
+          const args = ['status', relativePath]
+          console.log('[getSvnStatus] Executing:', `svn ${args.join(' ')}`)
 
-        console.log(`[getSvnStatus] Parsed line: status='${status}' path='${filePath}'`)
-
-        // Only include recognized status codes
-        if (['M', 'A', 'D', 'R', 'C', 'X', '?', '!'].includes(status) && filePath) {
-          files.push({
-            status,
-            path: filePath
+          const result = spawnSync('svn', args, {
+            cwd: repoPath,
+            encoding: 'utf-8',
+            stdio: ['pipe', 'pipe', 'pipe']
           })
+
+          const output = result.stdout || ''
+          if (output) {
+            files.push(...parseSvnStatusOutput(output))
+          }
+
+          if (result.status !== 0 && result.stderr) {
+            console.warn(
+              '[getSvnStatus] Partial status lookup failed for',
+              relativePath,
+              result.stderr
+            )
+          }
+        }
+      } else {
+        const args = ['status']
+        console.log('[getSvnStatus] Executing:', `svn ${args.join(' ')}`)
+        const result = spawnSync('svn', args, {
+          cwd: repoPath,
+          encoding: 'utf-8',
+          stdio: ['pipe', 'pipe', 'pipe']
+        })
+        const output = result.stdout || ''
+        console.log('[getSvnStatus] Output:', output)
+        files.push(...parseSvnStatusOutput(output))
+
+        if (result.error) {
+          throw result.error
+        }
+        if (result.status !== 0) {
+          throw new Error(result.stderr || '获取状态失败')
         }
       }
 
@@ -1427,6 +1478,7 @@ export const apiHandlers = {
         message: `Update 失败，无法继续 merge: ${updateResult.message}`,
         files: [],
         onlyFiles: [],
+        trackedFiles: [],
         isMerging: false,
         hasTreeConflict: false
       }
@@ -1462,6 +1514,7 @@ export const apiHandlers = {
         message: `Update 发生冲突，请先解决本地冲突后再执行 merge。冲突文件数: ${conflictFiles.length}`,
         files: conflictFiles,
         onlyFiles: filterOnlyFiles(targetRepo.url, conflictFiles),
+        trackedFiles: filterOnlyFiles(targetRepo.url, conflictFiles),
         isMerging: false,
         hasTreeConflict: false
       }
@@ -1545,6 +1598,7 @@ export const apiHandlers = {
             message: `版本 r${currentRevision} 合并冲突`,
             files: Array.from(allFiles),
             onlyFiles: filterOnlyFiles(targetRepo.url, Array.from(allFiles)),
+            trackedFiles: filterOnlyFiles(targetRepo.url, Array.from(allFiles)),
             isMerging: false,
             hasTreeConflict: treeConflictCount > 0
           }
@@ -1598,19 +1652,15 @@ export const apiHandlers = {
               : ''
           treeConflictCount = parseSvnTreeConflictCount(`${errorStdout}\n${errorStderr}`)
 
-          // If we got files from merge output, use them; otherwise fall back to svn status
+          // 优先从命令输出解析，避免 svn status 混入预存改动
           if (mergedFiles.length > 0) {
-            affectedFiles = mergedFiles.map((f) => `${f.status}  ${f.path}`)
+            affectedFiles =
+              treeConflictCount > 0 ? [] : mergedFiles.map((f) => `${f.status}  ${f.path}`)
             hasConflict = mergedFiles.some((f) => f.status === 'C') || treeConflictCount > 0
           } else {
+            // merge 输出为空时只用 svn status 判断冲突，不把全量文件列表存入会话
             const statusResult = await apiHandlers.getSvnStatus(targetRepo.url)
-            affectedFiles = statusResult.files
-              .map((f) => `${f.status}  ${f.path}`)
-              .filter((f) => ['C', 'M', 'A', 'D', 'R'].some((st) => f.startsWith(st)))
             hasConflict = statusResult.files.some((f) => f.status === 'C') || treeConflictCount > 0
-          }
-
-          if (treeConflictCount > 0) {
             affectedFiles = []
           }
 
@@ -1647,6 +1697,7 @@ export const apiHandlers = {
             message: `版本 r${currentRevision} 合并冲突`,
             files: Array.from(allFiles),
             onlyFiles: filterOnlyFiles(targetRepo.url, Array.from(allFiles)),
+            trackedFiles: filterOnlyFiles(targetRepo.url, Array.from(allFiles)),
             isMerging: false,
             hasTreeConflict: treeConflictCount > 0
           }
@@ -1675,6 +1726,7 @@ export const apiHandlers = {
           message: `版本 r${currentRevision} 合并失败: ${error instanceof Error ? error.message : '未知错误'}`,
           files: Array.from(allFiles),
           onlyFiles: filterOnlyFiles(targetRepo.url, Array.from(allFiles)),
+          trackedFiles: filterOnlyFiles(targetRepo.url, Array.from(allFiles)),
           isMerging: false,
           hasTreeConflict: false
         }
@@ -1703,6 +1755,7 @@ export const apiHandlers = {
       message: '全部合并成功',
       files: Array.from(allFiles),
       onlyFiles: filterOnlyFiles(targetRepo.url, Array.from(allFiles)),
+      trackedFiles: filterOnlyFiles(targetRepo.url, Array.from(allFiles)),
       isMerging: false,
       hasTreeConflict: false
     }
@@ -1759,18 +1812,19 @@ export const apiHandlers = {
 
       try {
         const mergeCmd = `svn merge --accept=postpone${getSslTrustFlags(sourceRepoUrl)} -c ${nextRevision} "${sourceRepoUrl}" "${targetRepoPath}"`
-        await execAsync(mergeCmd, {
+        const mergeResult = await execAsync(mergeCmd, {
           cwd: targetRepoPath,
           maxBuffer: 10 * 1024 * 1024
         })
 
-        // 获取受影响的文件列表
-        const statusResult = await apiHandlers.getSvnStatus(targetRepoPath)
-        const affectedFiles = statusResult.files
-          .map((f) => `${f.status}  ${f.path}`)
-          .filter((f) => ['C', 'M', 'A', 'D', 'R'].some((st) => f.startsWith(st)))
-
-        const hasConflict = statusResult.files.some((f) => f.status === 'C')
+        // 只解析本次 merge 命令输出的文件，避免把工作区预存改动混入
+        const mergedFiles = parseSvnMergeOutput(mergeResult.stdout)
+        const treeConflictCount = parseSvnTreeConflictCount(
+          `${mergeResult.stdout || ''}\n${mergeResult.stderr || ''}`
+        )
+        const affectedFiles =
+          treeConflictCount > 0 ? [] : mergedFiles.map((f) => `${f.status}  ${f.path}`)
+        const hasConflict = mergedFiles.some((f) => f.status === 'C') || treeConflictCount > 0
 
         // 更新当前版本的状态
         currentSession.revisions[nextIndex].status = hasConflict ? 'conflict' : 'success'
@@ -1780,8 +1834,11 @@ export const apiHandlers = {
         // 更新累积的文件列表
         const allFiles = new Set(currentSession.files || [])
         affectedFiles.forEach((f) => allFiles.add(f))
+        const trackedFiles = new Set(currentSession.trackedFiles || currentSession.onlyFiles || [])
+        filterOnlyFiles(targetRepoPath, affectedFiles).forEach((f) => trackedFiles.add(f))
         currentSession.files = Array.from(allFiles)
         currentSession.onlyFiles = filterOnlyFiles(targetRepoPath, currentSession.files)
+        currentSession.trackedFiles = Array.from(trackedFiles)
 
         // 如果有冲突，停止并返回，等待用户解决
         if (hasConflict) {
@@ -1798,12 +1855,45 @@ export const apiHandlers = {
         // 即使出错，也尝试获取文件列表
         let affectedFiles: string[] = []
         let hasConflict = false
+        let treeConflictCount = 0
         try {
-          const statusResult = await apiHandlers.getSvnStatus(targetRepoPath)
-          affectedFiles = statusResult.files
-            .map((f) => `${f.status}  ${f.path}`)
-            .filter((f) => ['C', 'M', 'A', 'D', 'R'].some((st) => f.startsWith(st)))
-          hasConflict = statusResult.files.some((f) => f.status === 'C')
+          // 优先从命令输出解析，避免 svn status 混入预存改动
+          let mergedFiles: Array<{ status: string; path: string }> = []
+          if (
+            error &&
+            typeof error === 'object' &&
+            'stdout' in error &&
+            typeof error.stdout === 'string'
+          ) {
+            mergedFiles = parseSvnMergeOutput(error.stdout)
+          }
+
+          const errorStdout =
+            error &&
+            typeof error === 'object' &&
+            'stdout' in error &&
+            typeof error.stdout === 'string'
+              ? error.stdout
+              : ''
+          const errorStderr =
+            error &&
+            typeof error === 'object' &&
+            'stderr' in error &&
+            typeof error.stderr === 'string'
+              ? error.stderr
+              : ''
+          treeConflictCount = parseSvnTreeConflictCount(`${errorStdout}\n${errorStderr}`)
+
+          if (mergedFiles.length > 0) {
+            affectedFiles =
+              treeConflictCount > 0 ? [] : mergedFiles.map((f) => `${f.status}  ${f.path}`)
+            hasConflict = mergedFiles.some((f) => f.status === 'C') || treeConflictCount > 0
+          } else {
+            // merge 输出为空时才用 svn status 判断冲突（不把 status 文件列表存入会话）
+            const statusResult = await apiHandlers.getSvnStatus(targetRepoPath)
+            hasConflict = statusResult.files.some((f) => f.status === 'C') || treeConflictCount > 0
+            affectedFiles = []
+          }
         } catch {
           // 忽略
         }
@@ -1811,15 +1901,21 @@ export const apiHandlers = {
         if (hasConflict) {
           currentSession.revisions[nextIndex].status = 'conflict'
           currentSession.revisions[nextIndex].files = affectedFiles
-          currentSession.revisions[nextIndex].message = '合并冲突'
+          currentSession.revisions[nextIndex].message =
+            treeConflictCount > 0 ? `合并冲突（Tree conflicts: ${treeConflictCount}）` : '合并冲突'
           currentSession.currentRevisionIndex = nextIndex
           currentSession.message = `版本 r${nextRevision} 合并冲突`
 
           // 更新累积的文件列表
           const allFiles = new Set(currentSession.files || [])
           affectedFiles.forEach((f) => allFiles.add(f))
+          const trackedFiles = new Set(
+            currentSession.trackedFiles || currentSession.onlyFiles || []
+          )
+          filterOnlyFiles(targetRepoPath, affectedFiles).forEach((f) => trackedFiles.add(f))
           currentSession.files = Array.from(allFiles)
           currentSession.onlyFiles = filterOnlyFiles(targetRepoPath, currentSession.files)
+          currentSession.trackedFiles = Array.from(trackedFiles)
 
           return currentSession
         }

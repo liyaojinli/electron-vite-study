@@ -19,6 +19,7 @@ export interface MergeSessionResult {
   message: string
   files?: string[]
   onlyFiles?: string[]
+  trackedFiles?: string[]
   isMerging?: boolean
   hasTreeConflict: boolean
 }

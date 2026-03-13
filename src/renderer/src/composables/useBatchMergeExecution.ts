@@ -1,6 +1,7 @@
 import { computed, ref, type Ref } from 'vue'
 import type { MergeSessionResult } from '../../../shared/merge'
 import type { RepositoryData } from '../../../shared/repository'
+import { getTrackedFilePaths } from '../utils/mergeProgress'
 
 interface UseBatchMergeExecutionOptions {
   selectedSourceRepo: Ref<string>
@@ -141,23 +142,27 @@ export const useBatchMergeExecution = (
         if (!repoPath) return result
 
         try {
-          const statusResult = await api.getSvnStatus(repoPath)
-          const files = statusResult.files
-            .map((f) => `${f.status}  ${f.path}`)
-            .filter((f) => ['C', 'M', 'A', 'D', 'R'].some((st) => f.startsWith(st)))
+          const trackedPaths = getTrackedFilePaths(result)
+          const statusResult = await api.getSvnStatus(repoPath, trackedPaths)
+          const statusMap = new Map(statusResult.files.map((f) => [f.path, f.status]))
 
-          if (result.success) {
-            return {
-              ...result,
-              files,
-              onlyFiles: result.onlyFiles,
-              message: files.some((file) => file.startsWith('C')) ? '合并冲突' : '合并成功'
-            }
-          }
+          // 只对本次 merge 会话已追踪的文件更新状态，不把全量工作区改动混入
+          const trackedEntries = result.trackedFiles || result.onlyFiles || []
+          const refreshedFiles = trackedEntries
+            .map((entry) => {
+              const match = entry.match(/^[A-Z?!X]\s+(.+)$/)
+              const filePath = match ? match[1].trim() : entry.trim()
+              const currentStatus = statusMap.get(filePath)
+              return currentStatus ? `${currentStatus}  ${filePath}` : null
+            })
+            .filter((e): e is string => e !== null)
 
           return {
             ...result,
-            files
+            files: refreshedFiles,
+            onlyFiles: refreshedFiles,
+            trackedFiles: result.trackedFiles || result.onlyFiles || result.files,
+            message: refreshedFiles.some((f) => f.startsWith('C')) ? '合并冲突' : result.message
           }
         } catch (error) {
           console.warn('[handleMergeDialogRefresh] Failed to refresh status for', repoPath, error)
@@ -208,6 +213,7 @@ export const useBatchMergeExecution = (
       message: '合并中',
       files: [],
       onlyFiles: [],
+      trackedFiles: [],
       isMerging: true,
       hasTreeConflict: false
     }))

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, onBeforeUnmount } from 'vue'
 import * as monaco from 'monaco-editor'
-import { ChevronLeft, ChevronRight, X } from 'lucide-vue-next'
+import { ChevronLeft, ChevronRight, Save, X } from 'lucide-vue-next'
 
 interface Props {
   visible?: boolean
@@ -21,14 +21,18 @@ const emit = defineEmits<{
 
 const api = window.api
 const isLoading = ref(false)
+const isSaving = ref(false)
 const error = ref<string>('')
+const saveMessage = ref<string>('')
 const editorKey = ref(0)
 const showEditor = ref(false)
+const hasUnsavedChanges = ref(false)
 
 // Editor refs - stored outside Vue reactivity
 let diffEditorInstance: monaco.editor.IStandaloneDiffEditor | null = null
 let originalModelInstance: monaco.editor.ITextModel | null = null
 let modifiedModelInstance: monaco.editor.ITextModel | null = null
+let modifiedModelSubscription: monaco.IDisposable | null = null
 const hasDiffEditor = ref(false)
 
 // Get current theme
@@ -74,6 +78,12 @@ const getLanguageFromPath = (path: string): string => {
 
 const destroyEditor = (): void => {
   hasDiffEditor.value = false
+  hasUnsavedChanges.value = false
+  saveMessage.value = ''
+  if (modifiedModelSubscription) {
+    modifiedModelSubscription.dispose()
+    modifiedModelSubscription = null
+  }
   if (originalModelInstance) {
     originalModelInstance.dispose()
     originalModelInstance = null
@@ -100,7 +110,7 @@ const initEditor = (
 
   // Create diff editor with theme
   diffEditorInstance = monaco.editor.createDiffEditor(container, {
-    readOnly: true,
+    readOnly: false,
     enableSplitViewResizing: true,
     renderSideBySide: true,
     minimap: { enabled: false },
@@ -117,6 +127,18 @@ const initEditor = (
     original: originalModelInstance,
     modified: modifiedModelInstance
   })
+
+  // Allow editing only on local working copy side.
+  diffEditorInstance.getModifiedEditor().updateOptions({
+    readOnly: false
+  })
+
+  hasUnsavedChanges.value = false
+  modifiedModelSubscription = modifiedModelInstance.onDidChangeContent(() => {
+    hasUnsavedChanges.value = true
+    saveMessage.value = ''
+  })
+
   hasDiffEditor.value = true
 }
 
@@ -146,6 +168,8 @@ const loadDiff = async (): Promise<void> => {
 
   isLoading.value = true
   error.value = ''
+  saveMessage.value = ''
+  hasUnsavedChanges.value = false
   showEditor.value = false
   editorKey.value++
 
@@ -195,6 +219,13 @@ const loadDiff = async (): Promise<void> => {
 }
 
 const handleClose = (): void => {
+  if (hasUnsavedChanges.value) {
+    const shouldClose = window.confirm('当前文件有未保存改动，确定关闭并丢弃改动吗？')
+    if (!shouldClose) {
+      return
+    }
+  }
+
   cleanupThemeObserver()
   destroyEditor()
   showEditor.value = false
@@ -202,6 +233,41 @@ const handleClose = (): void => {
 }
 
 const canNavigate = computed(() => hasDiffEditor.value && showEditor.value && !isLoading.value)
+const canSave = computed(
+  () =>
+    hasDiffEditor.value &&
+    showEditor.value &&
+    !isLoading.value &&
+    !isSaving.value &&
+    !!props.repoPath &&
+    !!props.filePath &&
+    hasUnsavedChanges.value
+)
+
+const handleSave = async (): Promise<void> => {
+  if (!canSave.value || !modifiedModelInstance) return
+
+  isSaving.value = true
+  error.value = ''
+  saveMessage.value = ''
+
+  try {
+    const result = await api.saveSvnFile(
+      props.repoPath,
+      props.filePath,
+      modifiedModelInstance.getValue()
+    )
+    if (!result.success) {
+      throw new Error(result.message)
+    }
+    hasUnsavedChanges.value = false
+    saveMessage.value = '已保存到本地文件'
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : '保存失败'
+  } finally {
+    isSaving.value = false
+  }
+}
 
 const handleNavigatePrevious = (): void => {
   diffEditorInstance?.goToDiff('previous')
@@ -249,9 +315,15 @@ onBeforeUnmount(() => {
         <div class="toolbar-left">
           <span class="label">服务端版本 (HEAD)</span>
           <span class="separator">vs</span>
-          <span class="label">本地版本 (Working Copy)</span>
+          <span class="label">本地版本 (Working Copy，可编辑)</span>
         </div>
         <div class="toolbar-right">
+          <span v-if="hasUnsavedChanges" class="save-status unsaved">有未保存改动</span>
+          <span v-else-if="saveMessage" class="save-status success">{{ saveMessage }}</span>
+          <button class="nav-btn save-btn" :disabled="!canSave" @click="handleSave">
+            <Save :size="14" />
+            <span>{{ isSaving ? '保存中...' : '保存本地文件' }}</span>
+          </button>
           <button
             class="nav-btn app-action-secondary"
             :disabled="!canNavigate"
@@ -361,6 +433,18 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
+.save-status {
+  font-size: 12px;
+}
+
+.save-status.unsaved {
+  color: var(--color-warning, #d97706);
+}
+
+.save-status.success {
+  color: var(--color-success, #16a34a);
+}
+
 .nav-btn {
   display: inline-flex;
   align-items: center;
@@ -369,52 +453,15 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 
-.btn {
-  padding: 6px 14px;
-  border-radius: 4px;
-  border: 1px solid var(--color-border);
-  font-size: 13px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
-  transition: all 120ms ease;
-}
-
-.btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.btn-primary {
-  background: var(--color-primary);
+.save-btn {
+  background: var(--color-primary, #2563eb);
   color: white;
-  border-color: var(--color-primary);
+  border: 1px solid var(--color-primary, #2563eb);
 }
 
-.btn-primary:hover:not(:disabled) {
-  background: var(--color-primary-hover);
-  border-color: var(--color-primary-hover);
-}
-
-.btn-secondary {
-  background: var(--color-background-primary);
-  color: var(--color-text-primary);
-}
-
-.btn-secondary:hover:not(:disabled) {
-  background: var(--color-background-hover);
-}
-
-.btn-success {
-  background: var(--color-success);
-  color: white;
-  border-color: var(--color-success);
-}
-
-.btn-success:hover:not(:disabled) {
-  background: #16a34a;
-  border-color: #16a34a;
+.save-btn:hover:not(:disabled) {
+  background: var(--color-primary-hover, #1d4ed8);
+  border-color: var(--color-primary-hover, #1d4ed8);
 }
 
 .editor-wrapper {

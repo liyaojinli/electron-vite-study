@@ -1,6 +1,7 @@
 import { computed, ref, watch, type Ref } from 'vue'
 import type { FileWithStatus, MergeSessionResult, RepositoryToCommit } from '../../../shared/merge'
 import type { SvnCommitLog } from '../components/SvnLogViewer.vue'
+import { getTrackedFilePaths } from '../utils/mergeProgress'
 
 interface UseMergeCommitFlowOptions {
   visible: Ref<boolean>
@@ -172,7 +173,8 @@ export const useMergeCommitFlow = (
       if (commitFilePaths.length === 0) continue
 
       try {
-        const statusResult = await api.getSvnStatus(result.targetRepoPath!)
+        const trackedPaths = getTrackedFilePaths(result)
+        const statusResult = await api.getSvnStatus(result.targetRepoPath!, trackedPaths)
         const statusMap = new Map(statusResult.files.map((f) => [f.path, f.status]))
 
         const filesWithStatus: FileWithStatus[] = commitFilePaths.map((filePath) => ({
