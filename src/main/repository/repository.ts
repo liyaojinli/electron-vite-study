@@ -28,6 +28,7 @@ type RepositoryRow = {
   username: string
   password: string
   alias: string
+  pipeline_id: string | null
   local: number
   sort_order: number
 }
@@ -62,6 +63,11 @@ const normalizeString = (value: unknown): string => {
   return typeof value === 'string' ? value : ''
 }
 
+const normalizePipelineId = (value: unknown): string | null => {
+  const normalized = normalizeString(value).trim()
+  return normalized ? normalized : null
+}
+
 const normalizeRepositoryPath = (value: string, local: boolean): string => {
   const normalized = normalizeString(value)
     .trim()
@@ -92,6 +98,7 @@ const rowToRepository = (row: RepositoryRow): Repository => {
     username: row.username,
     password: row.password,
     alias: row.alias,
+    pipeLineId: row.pipeline_id,
     local: row.local === 1
   })
 }
@@ -138,6 +145,7 @@ const toRepository = (value: unknown, local: boolean = false): Repository | null
     normalizeString(data.username),
     normalizeString(data.password),
     normalizeString(data.alias),
+    normalizePipelineId(data.pipeLineId),
     local
   )
 }
@@ -205,8 +213,8 @@ const migrateScopeFromJson = async (scope: MigrationScope, local: boolean): Prom
       )
       const insertStmt = database.prepare(
         `INSERT INTO ${repositoryTableName}
-        (id, url, username, password, alias, local, sort_order, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        (id, url, username, password, alias, pipeline_id, local, sort_order, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
 
       const executeInsert = database.transaction((repos: Repository[]) => {
@@ -230,6 +238,7 @@ const migrateScopeFromJson = async (scope: MigrationScope, local: boolean): Prom
             normalizeString(repo.username),
             normalizeString(repo.password),
             normalizeString(repo.alias),
+            normalizePipelineId(repo.pipeLineId),
             toLocalFlag(local),
             index,
             nowIso(),
@@ -269,7 +278,7 @@ const listRowsByScope = (local: boolean): RepositoryRow[] => {
   const database = getRepositoryDb()
   return database
     .prepare(
-      `SELECT id, url, username, password, alias, local, sort_order
+      `SELECT id, url, username, password, alias, pipeline_id, local, sort_order
        FROM ${repositoryTableName}
        WHERE local = ?
        ORDER BY sort_order ASC, rowid ASC`
@@ -290,7 +299,7 @@ const getRowByIndex = (local: boolean, index: number): RepositoryRow | null => {
   const database = getRepositoryDb()
   const row = database
     .prepare(
-      `SELECT id, url, username, password, alias, local, sort_order
+      `SELECT id, url, username, password, alias, pipeline_id, local, sort_order
        FROM ${repositoryTableName}
        WHERE local = ?
        ORDER BY sort_order ASC, rowid ASC
@@ -309,7 +318,7 @@ const findRowByIdentity = (
   if (id) {
     const byId = database
       .prepare(
-        `SELECT id, url, username, password, alias, local, sort_order
+        `SELECT id, url, username, password, alias, pipeline_id, local, sort_order
         FROM ${repositoryTableName}
          WHERE id = ? AND local = ?`
       )
@@ -359,8 +368,8 @@ const insertByScopeAndIndex = async (
     database
       .prepare(
         `INSERT INTO ${repositoryTableName}
-         (id, url, username, password, alias, local, sort_order, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         (id, url, username, password, alias, pipeline_id, local, sort_order, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -368,6 +377,7 @@ const insertByScopeAndIndex = async (
         normalizeString(repo.username),
         normalizeString(repo.password),
         normalizeString(repo.alias),
+        normalizePipelineId(repo.pipeLineId),
         toLocalFlag(local),
         index,
         nowIso(),
@@ -390,7 +400,7 @@ const updateByScopeAndId = async (
   database
     .prepare(
       `UPDATE ${repositoryTableName}
-       SET url = ?, username = ?, password = ?, alias = ?, updated_at = ?
+       SET url = ?, username = ?, password = ?, alias = ?, pipeline_id = ?, updated_at = ?
        WHERE id = ? AND local = ?`
     )
     .run(
@@ -398,6 +408,7 @@ const updateByScopeAndId = async (
       normalizeString(repo.username),
       normalizeString(repo.password),
       normalizeString(repo.alias),
+      normalizePipelineId(repo.pipeLineId),
       nowIso(),
       id,
       toLocalFlag(local)

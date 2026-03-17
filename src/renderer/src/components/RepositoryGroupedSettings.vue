@@ -4,6 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   PackagePlus,
   Check,
+  ExternalLink,
   Folder,
   FolderOpen,
   FolderPlus,
@@ -130,7 +131,10 @@ const isLocalMode = computed(() => props.mode === 'local')
 const scopeLabel = computed(() => (isLocalMode.value ? '本地仓库' : '远程仓库'))
 const groupColumnMinWidth = computed(() => (isLocalMode.value ? 250 : 220))
 const pathColumnMinWidth = computed(() => (isLocalMode.value ? 260 : 220))
-const actionColumnMinWidth = computed(() => (isLocalMode.value ? 250 : 280))
+const actionColumnMinWidth = computed(() => (isLocalMode.value ? 290 : 320))
+const pipelineColumnMinWidth = 160
+const pipelineViewBaseUrl =
+  'https://pm.ysstech.com:8071/index.php?m=jenkins&f=pipelineView&t=html&pid=30944'
 
 const repositoryMap = computed(() => {
   return repositories.value.reduce<Record<string, UiRepository>>((acc, repo) => {
@@ -308,6 +312,7 @@ const toSerializableRepository = (repo: UiRepository): RepositoryData => {
     username: `${repo.username || ''}`,
     password: `${repo.password || ''}`,
     alias: `${repo.alias || ''}`,
+    pipeLineId: `${repo.pipeLineId || ''}`,
     local: isLocalMode.value
   }
 }
@@ -339,6 +344,7 @@ const loadAll = async (): Promise<void> => {
       username: repo.username,
       password: repo.password,
       alias: repo.alias,
+      pipeLineId: repo.pipeLineId || '',
       local: isLocalMode.value
     }))
     groups.value = groupList
@@ -363,9 +369,22 @@ const addDraftRepository = (
     username: sourceRepo?.username || '',
     password: sourceRepo?.password || '',
     alias: sourceRepo?.alias || '',
+    pipeLineId: sourceRepo?.pipeLineId || '',
     local: isLocalMode.value,
     targetGroupId
   })
+}
+
+const openPipeline = (repo: UiRepository): void => {
+  const pipelineId = `${repo.pipeLineId || ''}`.trim()
+  if (!pipelineId) {
+    ElMessage.warning('请先维护 pipeLineId')
+    return
+  }
+
+  const pipelineUrl = new URL(pipelineViewBaseUrl)
+  pipelineUrl.searchParams.set('pid', pipelineId)
+  window.open(pipelineUrl.toString(), '_blank')
 }
 
 const getLastRepositoryInGroup = (targetGroupId: string): UiRepository | undefined => {
@@ -1114,6 +1133,18 @@ onMounted(async () => {
           </template>
         </el-table-column>
 
+        <el-table-column label="pipeLineId" :min-width="pipelineColumnMinWidth">
+          <template #default="{ row }">
+            <input
+              v-if="row.kind === 'repo'"
+              v-model="row.repo.pipeLineId"
+              class="app-input"
+              type="text"
+              placeholder="维护 pipeLineId"
+            />
+          </template>
+        </el-table-column>
+
         <el-table-column v-if="!isLocalMode" label="用户名" min-width="96">
           <template #default="{ row }">
             <input
@@ -1226,6 +1257,15 @@ onMounted(async () => {
                 @click="viewRemoteLogs(row.repo)"
               >
                 <ScrollText :size="14" />
+              </button>
+              <button
+                type="button"
+                class="repo-button is-neutral icon-only"
+                aria-label="连接构建流水线"
+                title="连接构建流水线"
+                @click="openPipeline(row.repo)"
+              >
+                <ExternalLink :size="14" />
               </button>
               <button
                 v-if="!row.isUngroupedGroup"

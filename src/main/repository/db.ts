@@ -184,6 +184,7 @@ const createRepositoryTables = (database: SqlJsDatabaseAdapter): void => {
       username TEXT NOT NULL,
       password TEXT NOT NULL,
       alias TEXT NOT NULL,
+      pipeline_id TEXT,
       local INTEGER NOT NULL CHECK (local IN (0, 1)),
       sort_order INTEGER NOT NULL,
       created_at TEXT NOT NULL,
@@ -226,8 +227,21 @@ const createRepositoryTables = (database: SqlJsDatabaseAdapter): void => {
   `)
 }
 
+const ensureRepositoryTableColumns = (database: SqlJsDatabaseAdapter): void => {
+  const columns = database
+    .prepare(`PRAGMA table_info(${repositoryTableName})`)
+    .all() as Array<{ name: string }>
+
+  const hasPipelineId = columns.some((column) => column.name === 'pipeline_id')
+  if (!hasPipelineId) {
+    database.exec(`ALTER TABLE ${repositoryTableName} ADD COLUMN pipeline_id TEXT`)
+  }
+}
+
 const ensureRepositoryDbSchema = (): void => {
-  createRepositoryTables(getRepositoryDb())
+  const database = getRepositoryDb()
+  createRepositoryTables(database)
+  ensureRepositoryTableColumns(database)
 }
 
 export {

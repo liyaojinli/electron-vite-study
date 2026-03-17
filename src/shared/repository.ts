@@ -4,6 +4,7 @@ type RepositoryData = {
   username: string
   password: string
   alias: string
+  pipeLineId?: string | null
   local?: boolean
 }
 
@@ -27,6 +28,7 @@ class Repository {
   username: string
   password: string
   alias: string
+  pipeLineId: string | null
   local: boolean
 
   constructor(
@@ -35,6 +37,7 @@ class Repository {
     username: string,
     password: string,
     alias: string,
+    pipeLineId: string | null = null,
     local: boolean = false
   ) {
     this.id = id
@@ -42,6 +45,7 @@ class Repository {
     this.username = username
     this.password = password
     this.alias = alias
+    this.pipeLineId = pipeLineId
     this.local = local
   }
 
@@ -65,6 +69,10 @@ class Repository {
     return this.alias
   }
 
+  getPipeLineId(): string | null {
+    return this.pipeLineId
+  }
+
   isLocal(): boolean {
     return this.local
   }
@@ -76,6 +84,7 @@ class Repository {
       username: this.username,
       password: this.password,
       alias: this.alias,
+      pipeLineId: this.pipeLineId,
       local: this.local
     }
   }
@@ -87,6 +96,7 @@ class Repository {
       data.username,
       data.password,
       data.alias,
+      data.pipeLineId ?? null,
       data.local || false
     )
   }
